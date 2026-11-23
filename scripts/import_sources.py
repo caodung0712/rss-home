@@ -15,8 +15,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT_DIR, MinifluxClient, load_env
 
-YOUTUBE_CHANNEL_RE = re.compile(r'"(?:channelId|externalId)"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"')
-YOUTUBE_LINK_RE = re.compile(r'https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{20,})')
+YOUTUBE_ID_PATTERNS = (
+    re.compile(r'<link\s+rel="canonical"\s+href="https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{20,})"', re.I),
+    re.compile(r'<meta\s+property="og:url"\s+content="https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{20,})"', re.I),
+    re.compile(r'"rssUrl"\s*:\s*"https://www\.youtube\.com/feeds/videos\.xml\?channel_id=(UC[a-zA-Z0-9_-]{20,})"'),
+    re.compile(r'itemprop="(?:channelId|identifier)"\s+content="(UC[a-zA-Z0-9_-]{20,})"', re.I),
+    re.compile(r'"channelMetadataRenderer"\s*:\s*\{[^}]*"externalId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"'),
+    re.compile(r'"externalId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"'),
+)
+
+
+def _extract_youtube_channel_id(html: str) -> str | None:
+    for pat in YOUTUBE_ID_PATTERNS:
+        m = pat.search(html)
+        if m:
+            return m.group(1)
+    return None
 
 
 def resolve_youtube_feed(url_or_handle: str, no_shorts: bool = False) -> str:
@@ -46,10 +60,9 @@ def resolve_youtube_feed(url_or_handle: str, no_shorts: bool = False) -> str:
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
             html = resp.read().decode("utf-8", errors="replace")
-        m_cid = YOUTUBE_CHANNEL_RE.search(html) or YOUTUBE_LINK_RE.search(html)
-        if not m_cid:
+        channel_id = _extract_youtube_channel_id(html)
+        if not channel_id:
             raise ValueError(f"Không tìm thấy channel_id từ: {raw}")
-        channel_id = m_cid.group(1)
 
     if no_shorts and channel_id.startswith("UC"):
         return f"https://www.youtube.com/feeds/videos.xml?playlist_id=UULF{channel_id[2:]}"

@@ -1,6 +1,26 @@
-const YT_CHANNEL_RE = /"(?:channelId|externalId)"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"/;
-const YT_LINK_RE = /https:\/\/www\.youtube\.com\/channel\/(UC[a-zA-Z0-9_-]{20,})/;
+const YT_CANONICAL_RE = /<link\s+rel="canonical"\s+href="https:\/\/www\.youtube\.com\/channel\/(UC[a-zA-Z0-9_-]{20,})"/i;
+const YT_OG_URL_RE = /<meta\s+property="og:url"\s+content="https:\/\/www\.youtube\.com\/channel\/(UC[a-zA-Z0-9_-]{20,})"/i;
+const YT_RSS_URL_RE = /"rssUrl"\s*:\s*"https:\/\/www\.youtube\.com\/feeds\/videos\.xml\?channel_id=(UC[a-zA-Z0-9_-]{20,})"/;
+const YT_ITEMPROP_RE = /itemprop="(?:channelId|identifier)"\s+content="(UC[a-zA-Z0-9_-]{20,})"/i;
+const YT_METADATA_EXT_ID_RE = /"channelMetadataRenderer"\s*:\s*\{[^}]*"externalId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"/;
+const YT_EXTERNAL_ID_RE = /"externalId"\s*:\s*"(UC[a-zA-Z0-9_-]{20,})"/;
 const YT_TITLE_RE = /<meta\s+property="og:title"\s+content="([^"]+)"/i;
+
+function extractChannelIdFromHtml(html: string): string | null {
+  const patterns = [
+    YT_CANONICAL_RE,
+    YT_OG_URL_RE,
+    YT_RSS_URL_RE,
+    YT_ITEMPROP_RE,
+    YT_METADATA_EXT_ID_RE,
+    YT_EXTERNAL_ID_RE,
+  ];
+  for (const pat of patterns) {
+    const m = html.match(pat);
+    if (m?.[1]) return m[1];
+  }
+  return null;
+}
 
 export async function resolveYouTubeFeed(
   rawInput: string,
@@ -42,11 +62,10 @@ export async function resolveYouTubeFeed(
       throw new Error(`Không truy cập được kênh YouTube (HTTP ${res.status}).`);
     }
     const html = await res.text();
-    const cidMatch = html.match(YT_CHANNEL_RE) || html.match(YT_LINK_RE);
-    if (!cidMatch) {
+    channelId = extractChannelIdFromHtml(html);
+    if (!channelId) {
       throw new Error("Không tìm thấy channel_id từ đường dẫn YouTube này.");
     }
-    channelId = cidMatch[1];
     const titleMatch = html.match(YT_TITLE_RE);
     if (titleMatch?.[1]) {
       title = titleMatch[1];
