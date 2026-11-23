@@ -1,6 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { minifluxFetch } from "@/lib/miniflux";
+import { minifluxFetch, type MinifluxFeed } from "@/lib/miniflux";
+
+export async function GET(
+  _req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  if (!(await isAuthenticated())) {
+    return NextResponse.json({ error: "Chưa đăng nhập." }, { status: 401 });
+  }
+
+  const { id } = await context.params;
+  try {
+    const feed = await minifluxFetch<MinifluxFeed>(`/v1/feeds/${id}`);
+    return NextResponse.json(feed);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Không tải được thông tin feed." },
+      { status: 404 }
+    );
+  }
+}
 
 export async function PUT(
   req: NextRequest,
@@ -16,6 +36,11 @@ export async function PUT(
       title?: string;
       category_id?: number;
       crawler?: boolean;
+      disabled?: boolean;
+      blocklist_rules?: string;
+      keeplist_rules?: string;
+      feed_url?: string;
+      site_url?: string;
     };
     const updated = await minifluxFetch(`/v1/feeds/${id}`, {
       method: "PUT",

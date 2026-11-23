@@ -13,10 +13,13 @@ export interface MinifluxFeed {
   site_url: string;
   feed_url: string;
   checked_at: string;
+  next_check_at?: string;
   parsing_error_count: number;
   parsing_error_message: string;
   crawler: boolean;
   disabled: boolean;
+  blocklist_rules?: string;
+  keeplist_rules?: string;
   category: {
     id: number;
     title: string;

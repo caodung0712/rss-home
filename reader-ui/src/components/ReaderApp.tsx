@@ -23,20 +23,27 @@ import {
   ExternalLink,
   FileArchive,
   FileText,
+  Filter,
   Folder,
+  FolderPlus,
   Home,
   LogOut,
   Menu,
   Moon,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   Rss,
   Search,
+  Settings,
+  SlidersHorizontal,
   Sparkles,
   Square,
   Sun,
+  Trash2,
   X,
 } from "lucide-react";
+import { FeedPropertiesModal, type EditableFeed } from "./FeedModals";
 
 interface CategoryItem {
   id: number;
@@ -85,8 +92,8 @@ interface EntryDetail extends EntryListItem {
 type ViewScope =
   | { type: "all" }
   | { type: "starred" }
-  | { type: "category"; id: number; title: string }
-  | { type: "feed"; id: number; title: string };
+  | { type: "category"; id: number; title: string; starredOnly?: boolean }
+  | { type: "feed"; id: number; title: string; starredOnly?: boolean };
 
 function formatBadge(n: number): string {
   if (n > 999) return "1000+";
@@ -173,6 +180,18 @@ export default function ReaderApp({
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Menu chuột phải feed & modal thuộc tính/lọc (Ảnh 1)
+  const [feedMenu, setFeedMenu] = useState<{
+    feed: FeedItem;
+    x: number;
+    y: number;
+    showFolders?: boolean;
+  } | null>(null);
+  const [feedModal, setFeedModal] = useState<{
+    feed: EditableFeed;
+    tab: "properties" | "filter";
+  } | null>(null);
+
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const autoMarkedScrollRef = useRef<Set<number>>(new Set());
@@ -183,14 +202,33 @@ export default function ReaderApp({
     toastTimer.current = setTimeout(() => setToast(null), 2800);
   }, []);
 
-  // Khởi tạo theme
+  // Khởi tạo theme & trang mặc định (Set as start page)
   useEffect(() => {
     const saved = localStorage.getItem("rss-theme");
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const isDark = saved ? saved === "dark" : prefersDark;
     setDarkMode(isDark);
     document.documentElement.classList.toggle("dark", isDark);
+
+    try {
+      const startRaw = localStorage.getItem("rss-start-page");
+      if (startRaw) {
+        const parsed = JSON.parse(startRaw) as ViewScope;
+        if (parsed && parsed.type) {
+          setScope(parsed);
+        }
+      }
+    } catch {
+      // ignore
+    }
   }, []);
+
+  useEffect(() => {
+    if (!feedMenu) return;
+    const close = () => setFeedMenu(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [feedMenu]);
 
   const toggleTheme = () => {
     const next = !darkMode;
@@ -232,12 +270,15 @@ export default function ReaderApp({
   const buildFilterQuery = useCallback(
     (offset: number, limit = 40) => {
       const p = new URLSearchParams();
-      if (scope.type !== "starred" && statusFilter === "unread") {
+      const isStarredView =
+        scope.type === "starred" ||
+        ((scope.type === "feed" || scope.type === "category") && scope.starredOnly);
+      if (!isStarredView && statusFilter === "unread") {
         p.set("status", "unread");
       }
       if (scope.type === "category") p.set("category_id", String(scope.id));
       if (scope.type === "feed") p.set("feed_id", String(scope.id));
-      if (scope.type === "starred") p.set("starred", "true");
+      if (isStarredView) p.set("starred", "true");
       if (appliedSearch.trim()) p.set("search", appliedSearch.trim());
       if (afterDate) {
         const ts = Math.floor(new Date(`${afterDate}T00:00:00`).getTime() / 1000);
@@ -713,6 +754,9 @@ export default function ReaderApp({
   const currentHeading = useMemo(() => {
     if (scope.type === "all") return "Newsfeed";
     if (scope.type === "starred") return "Đã lưu";
+    if ((scope.type === "feed" || scope.type === "category") && scope.starredOnly) {
+      return `Đã lưu · ${scope.title}`;
+    }
     return scope.title;
   }, [scope]);
 
@@ -722,6 +766,80 @@ export default function ReaderApp({
     setSelectedIds(new Set());
     setSelectAllByFilter(false);
     setMobileMenuOpen(false);
+    setFeedMenu(null);
+  };
+
+  const handleCreateFolder = async () => {
+    const title = prompt("Tên thư mục mới:");
+    if (!title || !title.trim()) return;
+    const res = await fetch("/api/categories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: title.trim() }),
+    });
+    if (res.ok) {
+      showToast(`Đã tạo thư mục "${title.trim()}".`);
+      await loadSidebar();
+    } else {
+      showToast("Không tạo được thư mục.");
+    }
+  };
+
+  const handleToggleAllFolders = () => {
+    const anyExpanded = categories.some((c) => expandedFolders[c.id] ?? true);
+    const next: Record<number, boolean> = {};
+    for (const c of categories) next[c.id] = !anyExpanded;
+    setExpandedFolders(next);
+  };
+
+  const handleRenameFeed = async (feed: FeedItem) => {
+    const next = prompt("Đổi tên feed:", feed.title);
+    if (!next || next.trim() === feed.title) return;
+    const res = await fetch(`/api/feeds/${feed.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: next.trim() }),
+    });
+    if (res.ok) {
+      showToast(`Đã đổi tên thành "${next.trim()}".`);
+      await loadSidebar();
+    } else {
+      showToast("Không đổi tên được feed.");
+    }
+  };
+
+  const handleMoveFeedToFolder = async (feed: FeedItem, categoryId: number) => {
+    const res = await fetch(`/api/feeds/${feed.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_id: categoryId }),
+    });
+    if (res.ok) {
+      showToast(`Đã chuyển "${feed.title}" sang thư mục mới.`);
+      await loadSidebar();
+    } else {
+      showToast("Không chuyển được thư mục.");
+    }
+  };
+
+  const handleUnfollowFeed = async (feed: FeedItem) => {
+    if (!confirm(`Huỷ theo dõi "${feed.title}"?`)) return;
+    const res = await fetch(`/api/feeds/${feed.id}`, { method: "DELETE" });
+    if (res.ok) {
+      showToast(`Đã huỷ theo dõi "${feed.title}".`);
+      if (scope.type === "feed" && scope.id === feed.id) {
+        selectScope({ type: "all" });
+      }
+      await Promise.all([loadSidebar(), loadEntries(true)]);
+    } else {
+      showToast("Không huỷ theo dõi được feed.");
+    }
+  };
+
+  const handleSetStartPage = (feed: FeedItem) => {
+    const nextScope: ViewScope = { type: "feed", id: feed.id, title: feed.title };
+    localStorage.setItem("rss-start-page", JSON.stringify(nextScope));
+    showToast(`Đã đặt "${feed.title}" làm trang mặc định khi mở.`);
   };
 
   const handleLogout = async () => {
@@ -738,7 +856,28 @@ export default function ReaderApp({
           </span>
           Feeds
         </span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
+          <Link
+            href="/manage"
+            title="Quản lý nội dung (Manage feeds)"
+            className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </Link>
+          <button
+            onClick={() => void handleCreateFolder()}
+            title="Tạo thư mục mới"
+            className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
+          >
+            <FolderPlus className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={handleToggleAllFolders}
+            title="Thu gọn / mở rộng tất cả thư mục"
+            className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+          </button>
           <Link
             href="/add"
             title="Thêm nguồn mới"
@@ -856,27 +995,57 @@ export default function ReaderApp({
               {expanded && (
                 <div className="pl-5 space-y-0.5">
                   {catFeeds.map((f) => (
-                    <button
+                    <div
                       key={f.id}
-                      onClick={() =>
-                        selectScope({ type: "feed", id: f.id, title: f.title })
-                      }
-                      className={`w-full flex items-center justify-between px-2 py-1 rounded-md text-[13px] transition-colors ${
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setFeedMenu({
+                          feed: f,
+                          x: Math.min(e.clientX, window.innerWidth - 240),
+                          y: Math.min(e.clientY, window.innerHeight - 360),
+                        });
+                      }}
+                      className={`group/feed flex items-center justify-between px-2 py-1 rounded-md text-[13px] transition-colors ${
                         scope.type === "feed" && scope.id === f.id
                           ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
                           : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300"
                       }`}
                     >
-                      <span className="flex items-center gap-2 min-w-0">
+                      <button
+                        onClick={() =>
+                          selectScope({ type: "feed", id: f.id, title: f.title })
+                        }
+                        className="flex items-center gap-2 min-w-0 flex-1 text-left"
+                      >
                         <FeedIcon feedId={f.id} />
                         <span className="truncate">{f.title}</span>
-                      </span>
-                      {f.unread_count > 0 && (
-                        <span className="text-[11px] text-slate-500 dark:text-slate-400 pl-1 shrink-0">
-                          {formatBadge(f.unread_count)}
-                        </span>
-                      )}
-                    </button>
+                      </button>
+                      <div className="flex items-center gap-1 pl-1 shrink-0">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = (
+                              e.currentTarget as HTMLElement
+                            ).getBoundingClientRect();
+                            setFeedMenu({
+                              feed: f,
+                              x: Math.min(rect.right + 4, window.innerWidth - 240),
+                              y: Math.min(rect.top, window.innerHeight - 360),
+                            });
+                          }}
+                          title="Tuỳ chọn feed"
+                          className="opacity-0 group-hover/feed:opacity-100 p-0.5 rounded hover:bg-slate-300/60 dark:hover:bg-slate-700 text-slate-400"
+                        >
+                          <MoreHorizontal className="w-3.5 h-3.5" />
+                        </button>
+                        {f.unread_count > 0 && (
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {formatBadge(f.unread_count)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
@@ -941,6 +1110,13 @@ export default function ReaderApp({
         </div>
 
         <div className="flex flex-col items-center gap-2">
+          <Link
+            href="/manage"
+            title="Quản lý nội dung (Content)"
+            className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+          >
+            <Settings className="w-4 h-4" />
+          </Link>
           <Link
             href="/status"
             title="Trạng thái hệ thống"
@@ -1048,7 +1224,8 @@ export default function ReaderApp({
             )}
 
             {/* Unread / All */}
-            {scope.type !== "starred" && (
+            {scope.type !== "starred" &&
+              !((scope.type === "feed" || scope.type === "category") && scope.starredOnly) && (
               <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5 text-xs">
                 <button
                   onClick={() => setStatusFilter("unread")}
@@ -1637,6 +1814,148 @@ export default function ReaderApp({
           </div>
         )}
       </main>
+
+      {/* Menu chuột phải / tuỳ chọn cho từng Feed (Ảnh 1) */}
+      {feedMenu && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ left: feedMenu.x, top: feedMenu.y }}
+          className="fixed z-50 w-56 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl py-1.5 text-[13px]"
+        >
+          <button
+            onClick={() => {
+              const target = feedMenu.feed;
+              setFeedMenu(null);
+              setFeedModal({ feed: target, tab: "properties" });
+            }}
+            className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
+            Thuộc tính feed
+          </button>
+          <button
+            onClick={() => {
+              const target = feedMenu.feed;
+              setFeedMenu(null);
+              void handleRenameFeed(target);
+            }}
+            className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            Đổi tên feed
+          </button>
+          <button
+            onClick={() => {
+              const target = feedMenu.feed;
+              setFeedMenu(null);
+              handleSetStartPage(target);
+            }}
+            className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            Đặt làm trang mặc định
+          </button>
+
+          {/* Submenu chuyển thư mục */}
+          <div className="relative">
+            <button
+              onClick={() =>
+                setFeedMenu((prev) =>
+                  prev ? { ...prev, showFolders: !prev.showFolders } : null
+                )
+              }
+              className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between"
+            >
+              <span>Chuyển vào thư mục</span>
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
+            </button>
+            {feedMenu.showFolders && (
+              <div className="border-y border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 py-1 max-h-40 overflow-y-auto">
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => {
+                      const target = feedMenu.feed;
+                      setFeedMenu(null);
+                      void handleMoveFeedToFolder(target, c.id);
+                    }}
+                    className={`w-full px-5 py-1.5 text-left text-xs hover:bg-slate-200/60 dark:hover:bg-slate-800 flex items-center justify-between ${
+                      feedMenu.feed.category?.id === c.id
+                        ? "font-semibold text-green-600"
+                        : ""
+                    }`}
+                  >
+                    <span className="truncate">{c.title}</span>
+                    {feedMenu.feed.category?.id === c.id && (
+                      <Check className="w-3 h-3" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button
+            onClick={() => {
+              const target = feedMenu.feed;
+              setFeedMenu(null);
+              setFeedModal({ feed: target, tab: "filter" });
+            }}
+            className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2"
+          >
+            <Filter className="w-3.5 h-3.5 text-slate-400" />
+            Lọc bài feed
+          </button>
+          <button
+            onClick={() => {
+              const target = feedMenu.feed;
+              setFeedMenu(null);
+              void handleUnfollowFeed(target);
+            }}
+            className="w-full px-3.5 py-2 text-left hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center gap-2"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Huỷ theo dõi
+          </button>
+          <button
+            onClick={() => {
+              const target = feedMenu.feed;
+              setFeedMenu(null);
+              selectScope({
+                type: "feed",
+                id: target.id,
+                title: target.title,
+                starredOnly: true,
+              });
+            }}
+            className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2"
+          >
+            <Bookmark className="w-3.5 h-3.5 text-slate-400" />
+            Chỉ xem bài đã lưu
+          </button>
+
+          <div className="my-1 border-t border-slate-200 dark:border-slate-800" />
+          <Link
+            href="/manage"
+            onClick={() => setFeedMenu(null)}
+            className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 font-medium"
+          >
+            <Settings className="w-3.5 h-3.5 text-slate-400" />
+            Quản lý feeds (Content)
+          </Link>
+        </div>
+      )}
+
+      {feedModal && (
+        <FeedPropertiesModal
+          feed={feedModal.feed}
+          folders={categories}
+          initialTab={feedModal.tab}
+          onClose={() => setFeedModal(null)}
+          onSaved={(msg) => {
+            showToast(msg);
+            void Promise.all([loadSidebar(), loadEntries(true)]);
+          }}
+        />
+      )}
 
       {/* Toast thông báo */}
       {toast && (

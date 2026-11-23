@@ -22,6 +22,7 @@ import {
   Rss,
   Search,
   Send,
+  Settings,
   Sparkles,
   Sun,
   Trash2,
@@ -532,6 +533,13 @@ export default function AddSourcePage() {
         </div>
 
         <div className="flex flex-col items-center gap-2">
+          <Link
+            href="/manage"
+            title="Quản lý nội dung (Content)"
+            className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+          >
+            <Settings className="w-4 h-4" />
+          </Link>
           <Link
             href="/status"
             title="Trạng thái hệ thống"
