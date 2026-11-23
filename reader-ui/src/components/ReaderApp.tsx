@@ -87,6 +87,8 @@ interface EntryDetail extends EntryListItem {
   plain_text: string;
   markdown: string;
   images: string[];
+  videos?: Array<{ url: string; mime_type: string; poster?: string }>;
+  youtube_embed_id?: string | null;
 }
 
 type ViewScope =
@@ -1794,6 +1796,34 @@ export default function ReaderApp({
                         {activeEntry.title}
                       </a>
                     </h1>
+
+                    {activeEntry.youtube_embed_id && (
+                      <div className="mb-5 aspect-video w-full overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 bg-black">
+                        <iframe
+                          src={`https://www.youtube-nocookie.com/embed/${activeEntry.youtube_embed_id}`}
+                          title={activeEntry.title}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                          className="w-full h-full"
+                        />
+                      </div>
+                    )}
+
+                    {activeEntry.videos && activeEntry.videos.length > 0 && (
+                      <div className="mb-5 space-y-3">
+                        {activeEntry.videos.map((v) => (
+                          <video
+                            key={v.url}
+                            src={v.url}
+                            poster={v.poster}
+                            controls
+                            playsInline
+                            preload="metadata"
+                            className="w-full max-h-[520px] rounded-xl bg-black border border-slate-200 dark:border-slate-800"
+                          />
+                        ))}
+                      </div>
+                    )}
 
                     <div
                       className="article-prose"

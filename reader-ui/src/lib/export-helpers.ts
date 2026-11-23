@@ -6,7 +6,53 @@ import {
 } from "./html-utils";
 import type { MinifluxEntry } from "./miniflux";
 
+function getMinifluxInternalUrl(): string {
+  return (process.env.MINIFLUX_INTERNAL_URL || "http://miniflux:8080").replace(
+    /\/+$/,
+    ""
+  );
+}
+
+export function rewriteMinifluxProxyUrl(raw: string): string | null {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith("/proxy/")) {
+    return `${getMinifluxInternalUrl()}${trimmed}`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.pathname.startsWith("/proxy/")) {
+      return `${getMinifluxInternalUrl()}${parsed.pathname}${parsed.search}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function decodeMinifluxProxyOriginalUrl(raw: string): string | null {
+  try {
+    const pathname = raw.startsWith("/proxy/")
+      ? raw
+      : new URL(raw).pathname;
+    const parts = pathname.split("/").filter(Boolean);
+    // /proxy/<hmac>/<base64url>
+    if (parts[0] === "proxy" && parts.length >= 3) {
+      const b64 = parts.slice(2).join("/").replace(/-/g, "+").replace(/_/g, "/");
+      const pad = b64.length % 4 === 0 ? "" : "=".repeat(4 - (b64.length % 4));
+      const decoded = Buffer.from(b64 + pad, "base64").toString("utf8");
+      if (/^https?:\/\//i.test(decoded)) {
+        return decoded;
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function isAllowedExternalUrl(raw: string): boolean {
+  if (rewriteMinifluxProxyUrl(raw)) return true;
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
@@ -28,21 +74,19 @@ export function isAllowedExternalUrl(raw: string): boolean {
   }
 }
 
-export async function downloadImageBuffer(
-  url: string
+async function fetchImageFromTarget(
+  targetUrl: string
 ): Promise<{ data: Uint8Array; ext: string; contentType: string } | null> {
-  if (!isAllowedExternalUrl(url)) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12000);
-    const res = await fetch(url, {
+    const res = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
       },
     });
-    clearTimeout(timer);
     if (!res.ok) return null;
 
     const contentType = res.headers.get("content-type") || "image/jpeg";
@@ -60,11 +104,32 @@ export async function downloadImageBuffer(
     else if (contentType.includes("gif")) ext = "gif";
     else if (contentType.includes("svg")) ext = "svg";
     else {
-      const m = url.match(/\.(png|jpg|jpeg|webp|gif)(\?|$)/i);
+      const m = targetUrl.match(/\.(png|jpg|jpeg|webp|gif)(\?|$)/i);
       if (m) ext = m[1].toLowerCase() === "jpeg" ? "jpg" : m[1].toLowerCase();
     }
 
     return { data: buf, ext, contentType };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function downloadImageBuffer(
+  url: string
+): Promise<{ data: Uint8Array; ext: string; contentType: string } | null> {
+  if (!isAllowedExternalUrl(url)) return null;
+  try {
+    const internalProxy = rewriteMinifluxProxyUrl(url);
+    if (internalProxy) {
+      const proxied = await fetchImageFromTarget(internalProxy);
+      if (proxied) return proxied;
+      const fallbackUrl = decodeMinifluxProxyOriginalUrl(url);
+      if (fallbackUrl && isAllowedExternalUrl(fallbackUrl)) {
+        return await fetchImageFromTarget(fallbackUrl);
+      }
+      return null;
+    }
+    return await fetchImageFromTarget(url);
   } catch {
     return null;
   }

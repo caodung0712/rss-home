@@ -22,6 +22,10 @@ export function formatRelativeTimeVi(isoDate: string): string {
   return new Date(ts).toLocaleDateString("vi-VN");
 }
 
+function isValidMediaUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url) || url.startsWith("/proxy/");
+}
+
 export function extractImageUrls(
   html: string,
   enclosures?: MinifluxEntry["enclosures"]
@@ -38,7 +42,7 @@ export function extractImageUrls(
         $(el).attr("data-original") ||
         "";
       const clean = src.trim();
-      if (clean && /^https?:\/\//i.test(clean) && !seen.has(clean)) {
+      if (clean && isValidMediaUrl(clean) && !seen.has(clean)) {
         seen.add(clean);
         urls.push(clean);
       }
@@ -49,7 +53,7 @@ export function extractImageUrls(
     for (const enc of enclosures) {
       if (
         enc.url &&
-        /^https?:\/\//i.test(enc.url) &&
+        isValidMediaUrl(enc.url) &&
         (enc.mime_type?.startsWith("image/") || /\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(enc.url))
       ) {
         if (!seen.has(enc.url)) {
@@ -61,6 +65,68 @@ export function extractImageUrls(
   }
 
   return urls;
+}
+
+export interface VideoMediaItem {
+  url: string;
+  mime_type: string;
+  poster?: string;
+}
+
+export function extractVideoItems(
+  html: string,
+  enclosures?: MinifluxEntry["enclosures"]
+): VideoMediaItem[] {
+  const videos: VideoMediaItem[] = [];
+  const seen = new Set<string>();
+  const firstImg = extractImageUrls(html, enclosures)[0];
+  const poster = firstImg
+    ? `/api/image-proxy?url=${encodeURIComponent(firstImg)}`
+    : undefined;
+
+  if (Array.isArray(enclosures)) {
+    for (const enc of enclosures) {
+      const url = (enc.url || "").trim();
+      if (
+        url &&
+        isValidMediaUrl(url) &&
+        (enc.mime_type?.startsWith("video/") ||
+          /\.(mp4|webm|mov)(\?|$)/i.test(url))
+      ) {
+        if (!seen.has(url)) {
+          seen.add(url);
+          videos.push({
+            url,
+            mime_type: enc.mime_type || "video/mp4",
+            poster,
+          });
+        }
+      }
+    }
+  }
+
+  return videos;
+}
+
+export function extractYouTubeEmbedId(entryUrl: string): string | null {
+  try {
+    const u = new URL(entryUrl);
+    const host = u.hostname.toLowerCase();
+    if (host.includes("youtube.com")) {
+      if (u.pathname === "/watch") {
+        return u.searchParams.get("v");
+      }
+      if (u.pathname.startsWith("/shorts/")) {
+        return u.pathname.split("/")[2] || null;
+      }
+    }
+    if (host === "youtu.be") {
+      return u.pathname.replace(/^\/+/, "").split("/")[0] || null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 export function extractThumbnail(entry: MinifluxEntry): string | null {
@@ -124,7 +190,7 @@ export function sanitizeArticleHtml(html: string, rewriteImagesToProxy = true): 
       img: (tagName, attribs) => {
         const rawSrc = attribs.src || "";
         const proxiedSrc =
-          rewriteImagesToProxy && /^https?:\/\//i.test(rawSrc)
+          rewriteImagesToProxy && isValidMediaUrl(rawSrc)
             ? `/api/image-proxy?url=${encodeURIComponent(rawSrc)}`
             : rawSrc;
         return {

@@ -3,6 +3,8 @@ import { isAuthenticated } from "@/lib/auth";
 import {
   extractImageUrls,
   extractPlainText,
+  extractVideoItems,
+  extractYouTubeEmbedId,
   htmlToMarkdown,
   sanitizeArticleHtml,
 } from "@/lib/html-utils";
@@ -24,6 +26,8 @@ export async function POST(
     const entry = await minifluxFetch<MinifluxEntry>(`/v1/entries/${id}`);
     const content = fetched?.content || entry.content || "";
     const images = extractImageUrls(content, entry.enclosures);
+    const videos = extractVideoItems(content, entry.enclosures);
+    const youtubeEmbedId = extractYouTubeEmbedId(entry.url || "");
 
     return NextResponse.json({
       ...entry,
@@ -32,6 +36,8 @@ export async function POST(
       plain_text: extractPlainText(content),
       markdown: htmlToMarkdown(content),
       images,
+      videos,
+      youtube_embed_id: youtubeEmbedId,
     });
   } catch (err) {
     return NextResponse.json(
