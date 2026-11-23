@@ -163,6 +163,7 @@ export default function ReaderApp({
   const [totalEntries, setTotalEntries] = useState(0);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [archiveExhausted, setArchiveExhausted] = useState(false);
   const [refreshingFeeds, setRefreshingFeeds] = useState(false);
   const [markMenuOpen, setMarkMenuOpen] = useState(false);
 
@@ -270,7 +271,7 @@ export default function ReaderApp({
   }, []);
 
   const buildFilterQuery = useCallback(
-    (offset: number, limit = 40) => {
+    (offset: number, limit = 20) => {
       const p = new URLSearchParams();
       const isStarredView =
         scope.type === "starred" ||
@@ -308,7 +309,7 @@ export default function ReaderApp({
 
       const offset = reset ? 0 : entries.length;
       try {
-        const params = buildFilterQuery(offset, 40);
+        const params = buildFilterQuery(offset, 20);
         const res = await fetch(`/api/entries?${params.toString()}`, {
           cache: "no-store",
         });
@@ -347,30 +348,63 @@ export default function ReaderApp({
   }, [loadSidebar]);
 
   useEffect(() => {
+    setArchiveExhausted(false);
     void loadEntries(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, statusFilter, appliedSearch, afterDate, beforeDate]);
 
-  // Cuộn vô hạn
-  useEffect(() => {
-    const el = loadMoreRef.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(
-      (items) => {
-        if (
-          items[0]?.isIntersecting &&
-          !loadingList &&
-          !loadingMore &&
-          entries.length < totalEntries
-        ) {
-          void loadEntries(false);
-        }
-      },
-      { rootMargin: "250px" }
+  const activeFeedSupportsArchive = useMemo(() => {
+    if (scope.type !== "feed") return false;
+    const active = feeds.find((f) => f.id === scope.id);
+    if (!active) return false;
+    const u = (active.feed_url || "").toLowerCase();
+    return (
+      (u.includes("youtube.com") && u.includes("feeds/videos.xml")) ||
+      u.includes("/telegram/channel/")
     );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [entries.length, totalEntries, loadingList, loadingMore, loadEntries]);
+  }, [scope, feeds]);
+
+  const handleLoadMore = async () => {
+    if (loadingMore || loadingList) return;
+    if (entries.length < totalEntries) {
+      await loadEntries(false);
+      return;
+    }
+    if (scope.type === "feed" && activeFeedSupportsArchive && !archiveExhausted) {
+      setLoadingMore(true);
+      try {
+        const res = await fetch(`/api/feeds/${scope.id}/load-more`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ batchSize: 20 }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          added?: number;
+          hasMore?: boolean;
+          error?: string;
+        };
+        if (!res.ok) {
+          showToast(data.error || "Không tải thêm được bài cũ.");
+          return;
+        }
+        const added = data.added || 0;
+        if (added > 0) {
+          await Promise.all([loadEntries(false), loadSidebar()]);
+          showToast(`Đã tải thêm ${added} bài cũ hơn.`);
+        } else {
+          setArchiveExhausted(true);
+          showToast("Không còn bài cũ hơn từ nguồn này.");
+        }
+        if (data.hasMore === false) {
+          setArchiveExhausted(true);
+        }
+      } catch {
+        showToast("Lỗi khi tải thêm bài cũ từ nguồn.");
+      } finally {
+        setLoadingMore(false);
+      }
+    }
+  };
 
   const markEntriesStatus = useCallback(
     async (ids: number[], status: "read" | "unread") => {
@@ -528,12 +562,27 @@ export default function ReaderApp({
   const handleRefreshFeeds = async () => {
     setRefreshingFeeds(true);
     try {
-      await fetch("/api/feeds/refresh", { method: "PUT" });
-      showToast("Đã yêu cầu Miniflux quét lại các feed.");
-      setTimeout(() => {
-        void loadSidebar();
-        void loadEntries(true);
-      }, 1500);
+      const payload =
+        scope.type === "feed"
+          ? { feedId: scope.id }
+          : scope.type === "category"
+            ? { categoryId: scope.id }
+            : {};
+      await fetch("/api/feeds/refresh", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (scope.type === "feed") {
+        await Promise.all([loadSidebar(), loadEntries(true)]);
+        showToast(`Đã làm mới "${scope.title}".`);
+      } else {
+        showToast("Đã yêu cầu Miniflux quét lại các feed.");
+        setTimeout(() => {
+          void loadSidebar();
+          void loadEntries(true);
+        }, 1500);
+      }
     } catch {
       showToast("Không làm mới được feed.");
     } finally {
@@ -1601,16 +1650,19 @@ export default function ReaderApp({
                 );
               })}
 
-              {/* Sentinel cuộn vô hạn */}
+              {/* Nút Xem thêm (~20 bài cũ hơn) */}
               <div ref={loadMoreRef} className="py-6 text-center">
                 {loadingMore ? (
-                  <span className="text-xs text-slate-400">Đang tải thêm...</span>
-                ) : entries.length < totalEntries ? (
+                  <span className="text-xs text-slate-400">
+                    Đang tải thêm bài cũ hơn...
+                  </span>
+                ) : entries.length < totalEntries ||
+                  (activeFeedSupportsArchive && !archiveExhausted) ? (
                   <button
-                    onClick={() => void loadEntries(false)}
-                    className="px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-800 text-xs hover:bg-slate-100 dark:hover:bg-slate-800"
+                    onClick={() => void handleLoadMore()}
+                    className="px-5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold shadow-sm transition-colors"
                   >
-                    Tải thêm bài viết
+                    Xem thêm (~20 bài cũ hơn)
                   </button>
                 ) : (
                   <span className="text-xs text-slate-400">Đã hiển thị hết danh sách</span>
