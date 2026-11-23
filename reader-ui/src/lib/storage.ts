@@ -1,21 +1,5 @@
 import net from "node:net";
-import { Pool } from "pg";
-
-let pool: Pool | null = null;
-
-function getPool(): Pool | null {
-  const connStr = (process.env.DATABASE_URL || "").trim();
-  if (!connStr) return null;
-  if (!pool) {
-    pool = new Pool({
-      connectionString: connStr,
-      max: 4,
-      idleTimeoutMillis: 15000,
-      connectionTimeoutMillis: 4000,
-    });
-  }
-  return pool;
-}
+import { getDbPool } from "./db";
 
 export interface FeedStorageRow {
   feed_id: number;
@@ -81,7 +65,7 @@ async function getRedisStats(): Promise<{ bytes: number; keys: number }> {
 }
 
 export async function getStorageStats(): Promise<StorageSummary> {
-  const p = getPool();
+  const p = getDbPool();
   const redis = await getRedisStats();
 
   if (!p) {
@@ -168,7 +152,7 @@ export async function cleanupOldEntries(opts: {
   olderThanDays: number;
   includeUnread?: boolean;
 }): Promise<{ cleared: number }> {
-  const p = getPool();
+  const p = getDbPool();
   if (!p) {
     throw new Error("Chưa cấu hình DATABASE_URL để dọn bài viết theo bộ lọc.");
   }

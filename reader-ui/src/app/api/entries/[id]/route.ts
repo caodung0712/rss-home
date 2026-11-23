@@ -30,6 +30,7 @@ export async function GET(
 
     return NextResponse.json({
       ...entry,
+      tags: Array.isArray(entry.tags) ? entry.tags : [],
       sanitized_html: sanitizedHtml,
       plain_text: plainText,
       markdown,

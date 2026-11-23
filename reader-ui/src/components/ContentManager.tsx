@@ -6,13 +6,16 @@ import {
   Activity,
   ArrowUpDown,
   Bookmark,
+  Check,
   Database,
   Edit2,
   Eraser,
+  ExternalLink,
   FileText,
   Filter,
   Folder,
   FolderPlus,
+  Globe,
   HardDrive,
   Home,
   Moon,
@@ -23,9 +26,12 @@ import {
   Search,
   Settings,
   Sun,
+  Tag,
   Trash2,
   X,
 } from "lucide-react";
+import { useI18n, type Locale } from "@/lib/i18n";
+import { TAG_COLORS, getTagStyle, type TagColorKey } from "@/lib/tag-colors";
 import {
   FeedPropertiesModal,
   type EditableFeed,
@@ -69,6 +75,13 @@ interface ContentCategory extends FolderOption {
   total_unread?: number;
 }
 
+interface ManagedTag {
+  name: string;
+  color: TagColorKey;
+  total_count: number;
+  unread_count: number;
+}
+
 function formatShortTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   const ts = Date.parse(iso);
@@ -99,13 +112,20 @@ function FeedLogo({ feedId }: { feedId: number }) {
 }
 
 export default function ContentManager() {
+  const { locale, setLocale, t } = useI18n();
   const [darkMode, setDarkMode] = useState(false);
-  const [activeTab, setActiveTab] = useState<"feeds" | "folders">("feeds");
+  const [activeTab, setActiveTab] = useState<"feeds" | "folders" | "tags" | "settings">("feeds");
   const [loading, setLoading] = useState(true);
 
   const [feeds, setFeeds] = useState<ContentFeed[]>([]);
   const [categories, setCategories] = useState<ContentCategory[]>([]);
+  const [tagsList, setTagsList] = useState<ManagedTag[]>([]);
   const [storageSummary, setStorageSummary] = useState<StorageSummary | null>(null);
+
+  // Tạo tag mới
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagColor, setNewTagColor] = useState<TagColorKey>("emerald");
+  const [savingTag, setSavingTag] = useState(false);
 
   // Bộ lọc bảng Feeds (giống ảnh 2)
   const [search, setSearch] = useState("");
@@ -149,6 +169,20 @@ export default function ContentManager() {
     const isDark = saved ? saved === "dark" : prefersDark;
     setDarkMode(isDark);
     document.documentElement.classList.toggle("dark", isDark);
+
+    try {
+      const tabParam = new URLSearchParams(window.location.search).get("tab");
+      if (
+        tabParam === "feeds" ||
+        tabParam === "folders" ||
+        tabParam === "tags" ||
+        tabParam === "settings"
+      ) {
+        setActiveTab(tabParam);
+      }
+    } catch {
+      // ignore
+    }
   }, []);
 
   const toggleTheme = () => {
@@ -161,20 +195,28 @@ export default function ContentManager() {
   const loadContent = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/content", { cache: "no-store" });
+      const [res, tagsRes] = await Promise.all([
+        fetch("/api/content", { cache: "no-store" }),
+        fetch("/api/tags", { cache: "no-store" }),
+      ]);
       if (res.status === 401) {
         window.location.href = "/login";
         return;
       }
-      if (!res.ok) return;
-      const data = (await res.json()) as {
-        categories: ContentCategory[];
-        feeds: ContentFeed[];
-        storage_summary?: StorageSummary;
-      };
-      setCategories(data.categories || []);
-      setFeeds(data.feeds || []);
-      setStorageSummary(data.storage_summary || null);
+      if (res.ok) {
+        const data = (await res.json()) as {
+          categories: ContentCategory[];
+          feeds: ContentFeed[];
+          storage_summary?: StorageSummary;
+        };
+        setCategories(data.categories || []);
+        setFeeds(data.feeds || []);
+        setStorageSummary(data.storage_summary || null);
+      }
+      if (tagsRes.ok) {
+        const tData = (await tagsRes.json()) as { tags?: ManagedTag[] };
+        setTagsList(tData.tags || []);
+      }
     } finally {
       setLoading(false);
     }
@@ -374,14 +416,78 @@ export default function ContentManager() {
   };
 
   const handleDeleteFolder = async (cat: ContentCategory) => {
-    if (!confirm(`Xoá thư mục "${cat.title}"?`)) return;
+    if (!confirm(`${t("delete")} "${cat.title}"?`)) return;
     const res = await fetch(`/api/categories/${cat.id}`, { method: "DELETE" });
     if (res.ok) {
-      showToast(`Đã xoá thư mục "${cat.title}".`);
+      showToast(t("toastTagUpdated"));
       await loadContent();
     } else {
       const data = (await res.json().catch(() => ({}))) as { error?: string };
-      showToast(data.error || "Không xoá được thư mục (hãy chuyển hết feed ra trước).");
+      showToast(data.error || t("toastErrMoveFeed"));
+    }
+  };
+
+  const handleSaveTag = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newTagName.trim().replace(/^#+/, "");
+    if (!clean) return;
+    setSavingTag(true);
+    try {
+      const res = await fetch("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: clean, color: newTagColor }),
+      });
+      if (!res.ok) throw new Error("err");
+      setNewTagName("");
+      showToast(t("toastTagUpdated"));
+      await loadContent();
+    } catch {
+      showToast(t("toastTagErr"));
+    } finally {
+      setSavingTag(false);
+    }
+  };
+
+  const handleChangeTagColor = async (tagName: string, color: TagColorKey) => {
+    setTagsList((prev) =>
+      prev.map((tg) => (tg.name === tagName ? { ...tg, color } : tg))
+    );
+    await fetch("/api/tags", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: tagName, color }),
+    });
+    showToast(t("toastTagUpdated"));
+  };
+
+  const handleRenameTag = async (tagName: string) => {
+    const next = prompt(t("renameTagPrompt"), tagName);
+    const clean = (next || "").trim().replace(/^#+/, "");
+    if (!clean || clean === tagName) return;
+    const res = await fetch("/api/tags", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "rename", oldName: tagName, newName: clean }),
+    });
+    if (res.ok) {
+      showToast(t("toastTagUpdated"));
+      await loadContent();
+    } else {
+      showToast(t("toastTagErr"));
+    }
+  };
+
+  const handleDeleteTag = async (tagName: string) => {
+    if (!confirm(t("confirmDeleteTag", { name: tagName }))) return;
+    const res = await fetch(`/api/tags?name=${encodeURIComponent(tagName)}`, {
+      method: "DELETE",
+    });
+    if (res.ok) {
+      showToast(t("toastTagUpdated"));
+      await loadContent();
+    } else {
+      showToast(t("toastTagErr"));
     }
   };
 
@@ -392,28 +498,28 @@ export default function ContentManager() {
         <div className="flex flex-col items-center gap-2">
           <Link
             href="/"
-            title="Newsfeed"
+            title={t("newsfeed")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Home className="w-4 h-4" />
           </Link>
           <Link
             href="/"
-            title="Đã lưu"
+            title={t("saved")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Bookmark className="w-4 h-4" />
           </Link>
           <Link
             href="/add"
-            title="Thêm nguồn mới"
+            title={t("addSource")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Plus className="w-4 h-4" />
           </Link>
           <Link
             href="/manage"
-            title="Quản lý nội dung (Content)"
+            title={t("manageContent")}
             className="p-2 rounded-lg bg-green-600 text-white"
           >
             <Settings className="w-4 h-4" />
@@ -423,14 +529,14 @@ export default function ContentManager() {
         <div className="flex flex-col items-center gap-2">
           <Link
             href="/status"
-            title="Trạng thái hệ thống"
+            title={t("systemStatus")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Activity className="w-4 h-4" />
           </Link>
           <button
             onClick={toggleTheme}
-            title="Chế độ sáng / tối"
+            title={t("darkMode")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -441,10 +547,10 @@ export default function ContentManager() {
       {/* Vùng Content chính */}
       <main className="flex-1 overflow-y-auto px-4 md:px-10 py-6">
         <div className="max-w-5xl mx-auto space-y-5">
-          {/* Header + Tabs (giống mục Content trong ảnh 2) */}
+          {/* Header + Tabs */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
-            <div className="flex items-center gap-6">
-              <h1 className="text-xl font-bold">Content</h1>
+            <div className="flex flex-wrap items-center gap-6">
+              <h1 className="text-xl font-bold">Content &amp; {t("settings")}</h1>
               <div className="flex items-center gap-4 text-sm">
                 <button
                   onClick={() => setActiveTab("feeds")}
@@ -454,7 +560,7 @@ export default function ContentManager() {
                       : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
                   }`}
                 >
-                  Feeds
+                  {t("tabFeeds")}
                 </button>
                 <button
                   onClick={() => setActiveTab("folders")}
@@ -464,24 +570,70 @@ export default function ContentManager() {
                       : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
                   }`}
                 >
-                  Folders
+                  {t("tabFolders")}
+                </button>
+                <button
+                  onClick={() => setActiveTab("tags")}
+                  className={`pb-1 border-b-2 transition-colors inline-flex items-center gap-1.5 ${
+                    activeTab === "tags"
+                      ? "border-blue-600 text-blue-600 font-semibold"
+                      : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                  }`}
+                >
+                  <Tag className="w-3.5 h-3.5" />
+                  {t("tabTags")}
+                </button>
+                <button
+                  onClick={() => setActiveTab("settings")}
+                  className={`pb-1 border-b-2 transition-colors inline-flex items-center gap-1.5 ${
+                    activeTab === "settings"
+                      ? "border-blue-600 text-blue-600 font-semibold"
+                      : "border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                  }`}
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                  {t("tabSettings")}
                 </button>
               </div>
             </div>
 
             <div className="flex items-center gap-2 text-xs">
+              <div
+                title={t("settingsLanguageTitle")}
+                className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5 bg-slate-50 dark:bg-slate-900"
+              >
+                {(
+                  [
+                    ["vi", "VI"],
+                    ["en", "EN"],
+                  ] as Array<[Locale, string]>
+                ).map(([code, label]) => (
+                  <button
+                    key={code}
+                    type="button"
+                    onClick={() => setLocale(code)}
+                    className={`px-2 py-1 rounded-md font-medium transition-colors ${
+                      locale === code
+                        ? "bg-green-600 text-white"
+                        : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
               <Link
                 href="/add"
                 className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white font-medium"
               >
                 <Plus className="w-3.5 h-3.5" />
-                Thêm nguồn
+                {t("addSourceShort")}
               </Link>
               <Link
                 href="/"
                 className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
               >
-                Về đọc tin
+                {t("backToReader")}
               </Link>
             </div>
           </div>
@@ -495,11 +647,13 @@ export default function ContentManager() {
                     <Database className="w-4 h-4 text-blue-600 shrink-0" />
                     <div>
                       <div className="font-semibold text-sm">
-                        Postgres: {formatBytes(storageSummary?.db_bytes || 0)}
+                        {t("postgresLabel")} {formatBytes(storageSummary?.db_bytes || 0)}
                       </div>
                       <div className="text-slate-500">
-                        {storageSummary?.total_active_entries ?? 0} bài đang lưu · tự xoá sau{" "}
-                        {storageSummary?.auto_cleanup_days ?? 180} ngày (trừ bài ★)
+                        {t("activeEntriesAutoClean", {
+                          count: storageSummary?.total_active_entries ?? 0,
+                          days: storageSummary?.auto_cleanup_days ?? 180,
+                        })}
                       </div>
                     </div>
                   </div>
@@ -508,10 +662,10 @@ export default function ContentManager() {
                     <HardDrive className="w-4 h-4 text-emerald-600 shrink-0" />
                     <div>
                       <div className="font-semibold text-sm">
-                        Cache Redis: {formatBytes(storageSummary?.redis_bytes || 0)}
+                        {t("redisCacheLabel")} {formatBytes(storageSummary?.redis_bytes || 0)}
                       </div>
                       <div className="text-slate-500">
-                        {storageSummary?.redis_keys ?? 0} keys RSSHub
+                        {t("redisKeysSuffix", { count: storageSummary?.redis_keys ?? 0 })}
                       </div>
                     </div>
                   </div>
@@ -524,18 +678,18 @@ export default function ContentManager() {
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium disabled:opacity-50"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${cleaning ? "animate-spin" : ""}`} />
-                    Clear cache
+                    {t("clearCache")}
                   </button>
                   <button
                     onClick={() => {
                       setCleanupDays(180);
                       setCleanupIncludeUnread(false);
-                      setCleanupModal({ label: "Tất cả feeds" });
+                      setCleanupModal({ label: t("allFeedsLabel") });
                     }}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-medium"
                   >
                     <Eraser className="w-3.5 h-3.5" />
-                    Dọn bài cũ
+                    {t("cleanOldEntries")}
                   </button>
                 </div>
               </div>
@@ -547,19 +701,19 @@ export default function ContentManager() {
                   type="text"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Tìm trong danh sách feeds..."
+                  placeholder={t("searchFeedsPlaceholder")}
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
-              {/* Bộ lọc giống ảnh 2 */}
+              {/* Bộ lọc */}
               <div className="flex flex-wrap items-center gap-2.5 text-xs">
                 <select
                   value={folderFilter}
                   onChange={(e) => setFolderFilter(e.target.value)}
                   className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                 >
-                  <option value="all">Tất cả thư mục</option>
+                  <option value="all">{t("allFoldersOpt")}</option>
                   {categories.map((c) => (
                     <option key={c.id} value={String(c.id)}>
                       {c.title}
@@ -572,7 +726,7 @@ export default function ContentManager() {
                   onChange={(e) => setTypeFilter(e.target.value)}
                   className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                 >
-                  <option value="all">Tất cả loại feed</option>
+                  <option value="all">{t("allFeedTypesOpt")}</option>
                   <option value="rss">Website / RSS</option>
                   <option value="youtube">YouTube</option>
                   <option value="tiktok">TikTok</option>
@@ -580,7 +734,7 @@ export default function ContentManager() {
                   <option value="x">X (Twitter)</option>
                   <option value="facebook">Facebook</option>
                   <option value="google">Google News / Alerts</option>
-                  <option value="rsshub">RSSHub khác</option>
+                  <option value="rsshub">RSSHub</option>
                 </select>
 
                 <select
@@ -588,10 +742,10 @@ export default function ContentManager() {
                   onChange={(e) => setLimitCount(Number(e.target.value))}
                   className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                 >
-                  <option value={50}>Hiện: 50</option>
-                  <option value={100}>Hiện: 100</option>
-                  <option value={200}>Hiện: 200</option>
-                  <option value={9999}>Tất cả</option>
+                  <option value={50}>{t("showCountPrefix")} 50</option>
+                  <option value={100}>{t("showCountPrefix")} 100</option>
+                  <option value={200}>{t("showCountPrefix")} 200</option>
+                  <option value={9999}>{t("all")}</option>
                 </select>
 
                 <select
@@ -599,9 +753,9 @@ export default function ContentManager() {
                   onChange={(e) => setSortBy(e.target.value as "size" | "entries" | "name")}
                   className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
                 >
-                  <option value="size">Sắp xếp: Dung lượng ↓</option>
-                  <option value="entries">Sắp xếp: Số bài ↓</option>
-                  <option value="name">Sắp xếp: Tên A-Z</option>
+                  <option value="size">{t("sortSize")}</option>
+                  <option value="entries">{t("sortEntries")}</option>
+                  <option value="name">{t("sortName")}</option>
                 </select>
 
                 <label className="inline-flex items-center gap-1.5 cursor-pointer px-2">
@@ -610,16 +764,16 @@ export default function ContentManager() {
                     checked={showUrls}
                     onChange={(e) => setShowUrls(e.target.checked)}
                   />
-                  Hiện URL
+                  {t("showUrl")}
                 </label>
 
                 <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5 ml-auto">
                   {(
                     [
-                      ["all", "Tất cả"],
-                      ["deactivated", "Đang tắt"],
-                      ["filtered", "Có lọc"],
-                      ["issues", "Đang lỗi"],
+                      ["all", t("pillAll")],
+                      ["deactivated", t("pillDisabled")],
+                      ["filtered", t("pillFiltered")],
+                      ["issues", t("pillIssues")],
                     ] as const
                   ).map(([key, label]) => (
                     <button
@@ -637,11 +791,11 @@ export default function ContentManager() {
                 </div>
               </div>
 
-              {/* Thanh thao tác hàng loạt khi chọn checkbox */}
+              {/* Thanh thao tác hàng loạt */}
               {selectedIds.size > 0 && (
                 <div className="p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 flex flex-wrap items-center justify-between gap-2 text-xs">
                   <span className="font-semibold">
-                    Đã chọn {selectedIds.size} feed
+                    {t("selectedFeedsCount", { count: selectedIds.size })}
                   </span>
                   <div className="flex items-center gap-2">
                     <select
@@ -654,7 +808,7 @@ export default function ContentManager() {
                       className="px-2.5 py-1 rounded-lg border border-blue-300 dark:border-blue-800 bg-white dark:bg-slate-900"
                     >
                       <option value="" disabled>
-                        Chuyển vào thư mục...
+                        {t("moveToFolderOpt")}
                       </option>
                       {categories.map((c) => (
                         <option key={c.id} value={c.id}>
@@ -668,28 +822,28 @@ export default function ContentManager() {
                         setCleanupIncludeUnread(false);
                         setCleanupModal({
                           feedIds: Array.from(selectedIds),
-                          label: `${selectedIds.size} feed đã chọn`,
+                          label: t("selectedFeedsCount", { count: selectedIds.size }),
                         });
                       }}
                       className="px-3 py-1 rounded-lg bg-amber-600 text-white hover:bg-amber-700 font-medium"
                     >
-                      Dọn bài cũ
+                      {t("cleanOldEntries")}
                     </button>
                     <button
                       onClick={() => void bulkDelete()}
                       className="px-3 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700 font-medium"
                     >
-                      Huỷ theo dõi
+                      {t("unfollow")}
                     </button>
                   </div>
                 </div>
               )}
 
               <div className="text-sm font-semibold">
-                Tổng cộng: {filteredFeeds.length} feeds
+                {t("totalFeedsCount", { count: filteredFeeds.length })}
               </div>
 
-              {/* Bảng danh sách Feeds giống ảnh 2 */}
+              {/* Bảng danh sách Feeds */}
               <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
                 <table className="w-full text-left border-collapse text-sm">
                   <thead>
@@ -710,8 +864,8 @@ export default function ContentManager() {
                           }}
                         />
                       </th>
-                      <th className="p-3 w-16">Bật</th>
-                      <th className="p-3">Feed</th>
+                      <th className="p-3 w-16">{t("colEnabled")}</th>
+                      <th className="p-3">{t("colFeed")}</th>
                       <th className="p-3 w-28">
                         <button
                           onClick={() =>
@@ -719,28 +873,28 @@ export default function ContentManager() {
                           }
                           className="inline-flex items-center gap-1 hover:text-slate-800 dark:hover:text-slate-200"
                         >
-                          Dung lượng
+                          {t("colStorage")}
                           <ArrowUpDown className="w-3 h-3" />
                         </button>
                       </th>
-                      <th className="p-3 w-28 hidden md:table-cell">Tỷ lệ đọc</th>
-                      <th className="p-3 w-20 hidden sm:table-cell">Quét</th>
-                      <th className="p-3 w-20 hidden sm:table-cell">Bài mới</th>
-                      <th className="p-3 w-16 text-center">Tình trạng</th>
-                      <th className="p-3 w-44 text-right">Thao tác</th>
+                      <th className="p-3 w-28 hidden md:table-cell">{t("colReadRate")}</th>
+                      <th className="p-3 w-20 hidden sm:table-cell">{t("colChecked")}</th>
+                      <th className="p-3 w-20 hidden sm:table-cell">{t("colLastPost")}</th>
+                      <th className="p-3 w-16 text-center">{t("colHealth")}</th>
+                      <th className="p-3 w-44 text-right">{t("colActions")}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                     {loading ? (
                       <tr>
                         <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
-                          Đang tải danh sách feeds...
+                          {t("loadingFeeds")}
                         </td>
                       </tr>
                     ) : filteredFeeds.length === 0 ? (
                       <tr>
                         <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
-                          Không có feed nào khớp điều kiện.
+                          {t("noMatchingFeeds")}
                         </td>
                       </tr>
                     ) : (
@@ -788,7 +942,7 @@ export default function ContentManager() {
                                     <span className="truncate">{feed.title}</span>
                                     {feed.is_filtered && (
                                       <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">
-                                        Lọc
+                                        {t("filterBadge")}
                                       </span>
                                     )}
                                   </div>
@@ -811,7 +965,7 @@ export default function ContentManager() {
                                 {formatBytes(feed.storage_bytes || 0)}
                               </div>
                               <div className="text-[11px] text-slate-500">
-                                {feed.stored_entries ?? 0} bài
+                                {feed.stored_entries ?? 0} {t("entriesSuffix")}
                                 {(feed.starred_count || 0) > 0
                                   ? ` · ★${feed.starred_count}`
                                   : ""}
@@ -933,7 +1087,7 @@ export default function ContentManager() {
                 </table>
               </div>
             </div>
-          ) : (
+          ) : activeTab === "folders" ? (
             /* Tab Folders */
             <div className="space-y-4">
               <form onSubmit={handleCreateFolder} className="flex gap-2 max-w-md">
@@ -941,7 +1095,7 @@ export default function ContentManager() {
                   type="text"
                   value={newFolderTitle}
                   onChange={(e) => setNewFolderTitle(e.target.value)}
-                  placeholder="Tên thư mục mới..."
+                  placeholder={t("newFolderPlaceholder")}
                   required
                   className="flex-1 px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
                 />
@@ -950,7 +1104,7 @@ export default function ContentManager() {
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white text-sm font-medium"
                 >
                   <FolderPlus className="w-4 h-4" />
-                  Tạo thư mục
+                  {t("createFolderBtn")}
                 </button>
               </form>
 
@@ -966,20 +1120,23 @@ export default function ContentManager() {
                         <Folder className="w-4 h-4 text-slate-400" />
                         <span className="font-semibold">{cat.title}</span>
                         <span className="text-xs text-slate-500">
-                          ({feedCount} feeds · {cat.total_unread || 0} chưa đọc)
+                          {t("folderStats", {
+                            feeds: feedCount,
+                            unread: cat.total_unread || 0,
+                          })}
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5">
                         <button
                           onClick={() => void handleRenameFolder(cat)}
-                          title="Đổi tên thư mục"
+                          title={t("rename")}
                           className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
                         >
                           <Edit2 className="w-4 h-4" />
                         </button>
                         <button
                           onClick={() => void handleDeleteFolder(cat)}
-                          title="Xoá thư mục"
+                          title={t("delete")}
                           className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -988,6 +1145,261 @@ export default function ContentManager() {
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          ) : activeTab === "tags" ? (
+            /* Tab Tags (quản lý thủ công) */
+            <div className="space-y-5">
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 p-4 space-y-1">
+                <h2 className="font-semibold text-base flex items-center gap-2">
+                  <Tag className="w-4 h-4 text-green-600" />
+                  {t("tagsIntroTitle")}
+                </h2>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  {t("tagsIntroDesc")}
+                </p>
+              </div>
+
+              <form
+                onSubmit={handleSaveTag}
+                className="rounded-xl border border-slate-200 dark:border-slate-800 p-4 space-y-3"
+              >
+                <div className="text-sm font-semibold">{t("createTagTitle")}</div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <input
+                    type="text"
+                    value={newTagName}
+                    onChange={(e) => setNewTagName(e.target.value)}
+                    placeholder={t("tagNamePlaceholder")}
+                    required
+                    className="flex-1 min-w-[220px] px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                  />
+                  <div className="flex items-center gap-1.5">
+                    {(Object.keys(TAG_COLORS) as TagColorKey[]).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setNewTagColor(key)}
+                        title={
+                          locale === "en"
+                            ? TAG_COLORS[key].labelEn
+                            : TAG_COLORS[key].labelVi
+                        }
+                        className={`w-6 h-6 rounded-full flex items-center justify-center border-2 transition-transform ${
+                          TAG_COLORS[key].dot
+                        } ${
+                          newTagColor === key
+                            ? "border-slate-900 dark:border-white scale-110"
+                            : "border-transparent opacity-75 hover:opacity-100"
+                        }`}
+                      >
+                        {newTagColor === key && (
+                          <Check className="w-3 h-3 text-white" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={savingTag}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-green-600 hover:bg-green-700 text-white text-sm font-medium disabled:opacity-50"
+                  >
+                    <Plus className="w-4 h-4" />
+                    {t("createTagBtn")}
+                  </button>
+                </div>
+              </form>
+
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800">
+                {tagsList.length === 0 ? (
+                  <div className="p-8 text-center text-xs text-slate-400">
+                    {t("noTagsYet")}
+                  </div>
+                ) : (
+                  tagsList.map((tg) => {
+                    const st = getTagStyle(tg.color);
+                    return (
+                      <div
+                        key={tg.name}
+                        className="p-3.5 flex flex-wrap items-center justify-between gap-3 text-sm"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-xs font-medium ${st.badge}`}
+                          >
+                            <span className={`w-2 h-2 rounded-full ${st.dot}`} />
+                            {tg.name}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            {t("tagStats", {
+                              total: tg.total_count,
+                              unread: tg.unread_count,
+                            })}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex items-center gap-1 mr-1">
+                            {(Object.keys(TAG_COLORS) as TagColorKey[]).map((ck) => (
+                              <button
+                                key={ck}
+                                type="button"
+                                onClick={() => void handleChangeTagColor(tg.name, ck)}
+                                className={`w-4 h-4 rounded-full ${TAG_COLORS[ck].dot} ${
+                                  tg.color === ck
+                                    ? "ring-2 ring-offset-1 ring-slate-700 dark:ring-white"
+                                    : "opacity-50 hover:opacity-100"
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <Link
+                            href={`/?tag=${encodeURIComponent(tg.name)}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            {t("viewTagArticles")}
+                          </Link>
+                          <button
+                            onClick={() => void handleRenameTag(tg.name)}
+                            title={t("rename")}
+                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => void handleDeleteTag(tg.name)}
+                            title={t("delete")}
+                            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Tab Settings (Ngôn ngữ Tiếng Việt / Tiếng Anh & Giao diện) */
+            <div className="space-y-5 max-w-2xl">
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+                <div className="flex items-start gap-3">
+                  <Globe className="w-5 h-5 text-green-600 mt-0.5 shrink-0" />
+                  <div>
+                    <h2 className="font-semibold text-base">
+                      {t("settingsLanguageTitle")}
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {t("settingsLanguageDesc")}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setLocale("vi")}
+                    className={`p-4 rounded-xl border text-left transition-all flex items-start justify-between gap-2 ${
+                      locale === "vi"
+                        ? "border-green-600 bg-green-50/70 dark:bg-green-950/40 ring-1 ring-green-600"
+                        : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <div>
+                      <div className="font-semibold text-sm flex items-center gap-2">
+                        <span>🇻🇳</span>
+                        <span>{t("vietnamese")}</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {t("langViDesc")}
+                      </p>
+                    </div>
+                    {locale === "vi" && (
+                      <Check className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setLocale("en")}
+                    className={`p-4 rounded-xl border text-left transition-all flex items-start justify-between gap-2 ${
+                      locale === "en"
+                        ? "border-green-600 bg-green-50/70 dark:bg-green-950/40 ring-1 ring-green-600"
+                        : "border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <div>
+                      <div className="font-semibold text-sm flex items-center gap-2">
+                        <span>🇬🇧</span>
+                        <span>{t("english")}</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-1">
+                        {t("langEnDesc")}
+                      </p>
+                    </div>
+                    {locale === "en" && (
+                      <Check className="w-4 h-4 text-green-600 shrink-0 mt-0.5" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+                <h2 className="font-semibold text-base">
+                  {t("settingsAppearanceTitle")}
+                </h2>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-600 dark:text-slate-300">
+                    {t("settingsThemeLabel")}
+                  </span>
+                  <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDarkMode(false);
+                        localStorage.setItem("rss-theme", "light");
+                        document.documentElement.classList.remove("dark");
+                      }}
+                      className={`inline-flex items-center gap-1 px-3 py-1 rounded-md ${
+                        !darkMode
+                          ? "bg-slate-900 text-white font-medium"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      <Sun className="w-3.5 h-3.5" />
+                      {t("lightModeName")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDarkMode(true);
+                        localStorage.setItem("rss-theme", "dark");
+                        document.documentElement.classList.add("dark");
+                      }}
+                      className={`inline-flex items-center gap-1 px-3 py-1 rounded-md ${
+                        darkMode
+                          ? "bg-slate-100 text-slate-900 font-medium"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      <Moon className="w-3.5 h-3.5" />
+                      {t("darkModeName")}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-1">
+                  <div className="text-sm font-medium">
+                    {t("settingsRetentionTitle")}
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {t("settingsRetentionDesc", {
+                      days: storageSummary?.auto_cleanup_days ?? 180,
+                    })}
+                  </p>
+                </div>
               </div>
             </div>
           )}
@@ -1017,7 +1429,7 @@ export default function ContentManager() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between">
-              <h3 className="font-bold text-base">Dọn bớt bài cũ</h3>
+              <h3 className="font-bold text-base">{t("cleanupModalTitle")}</h3>
               <button
                 onClick={() => setCleanupModal(null)}
                 className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
@@ -1027,24 +1439,26 @@ export default function ContentManager() {
             </div>
 
             <p className="text-xs text-slate-500">
-              Phạm vi: <strong className="text-slate-800 dark:text-slate-200">{cleanupModal.label}</strong>. Các bài bạn đã lưu (Bookmark ★) sẽ luôn được giữ lại.
+              {t("cleanupScopePrefix")}{" "}
+              <strong className="text-slate-800 dark:text-slate-200">{cleanupModal.label}</strong>.{" "}
+              {t("cleanupScopeNote")}
             </p>
 
             <form onSubmit={handleRunCleanup} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1.5">
-                  Xoá bài cũ hơn
+                  {t("cleanupOlderThan")}
                 </label>
                 <select
                   value={cleanupDays}
                   onChange={(e) => setCleanupDays(Number(e.target.value))}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
                 >
-                  <option value={180}>Cũ hơn 180 ngày (6 tháng)</option>
-                  <option value={90}>Cũ hơn 90 ngày (3 tháng)</option>
-                  <option value={30}>Cũ hơn 30 ngày (1 tháng)</option>
-                  <option value={7}>Cũ hơn 7 ngày</option>
-                  <option value={0}>Tất cả bài đã đọc (mọi thời điểm)</option>
+                  <option value={180}>{t("cleanup180d")}</option>
+                  <option value={90}>{t("cleanup90d")}</option>
+                  <option value={30}>{t("cleanup30d")}</option>
+                  <option value={7}>{t("cleanup7d")}</option>
+                  <option value={0}>{t("cleanup0d")}</option>
                 </select>
               </div>
 
@@ -1054,7 +1468,7 @@ export default function ContentManager() {
                   checked={cleanupIncludeUnread}
                   onChange={(e) => setCleanupIncludeUnread(e.target.checked)}
                 />
-                Bao gồm cả bài chưa đọc quá hạn (vẫn giữ bài đã lưu ★)
+                {t("cleanupIncludeUnread")}
               </label>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
@@ -1063,14 +1477,14 @@ export default function ContentManager() {
                   onClick={() => setCleanupModal(null)}
                   className="px-3.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs"
                 >
-                  Huỷ
+                  {t("cancel")}
                 </button>
                 <button
                   type="submit"
                   disabled={cleaning}
                   className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold disabled:opacity-50"
                 >
-                  {cleaning ? "Đang dọn..." : "Xác nhận dọn"}
+                  {cleaning ? t("cleaning") : t("confirmCleanup")}
                 </button>
               </div>
             </form>

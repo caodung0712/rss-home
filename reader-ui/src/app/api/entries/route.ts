@@ -21,6 +21,9 @@ export async function GET(req: NextRequest) {
   const feedId = sp.get("feed_id");
   if (feedId) params.set("feed_id", feedId);
 
+  const tag = sp.get("tag");
+  if (tag) params.set("tags", tag);
+
   const starred = sp.get("starred");
   if (starred === "true") params.set("starred", "true");
 
@@ -55,6 +58,7 @@ export async function GET(req: NextRequest) {
         author: entry.author,
         starred: entry.starred,
         reading_time: entry.reading_time,
+        tags: Array.isArray(entry.tags) ? entry.tags : [],
         feed: {
           id: entry.feed?.id || entry.feed_id,
           title: entry.feed?.title || "",

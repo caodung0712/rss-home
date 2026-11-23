@@ -13,6 +13,7 @@ interface ExportRequestBody {
     status?: string;
     categoryId?: number;
     feedId?: number;
+    tag?: string;
     starred?: boolean;
     search?: string;
     after?: string;
@@ -50,6 +51,7 @@ async function resolveEntries(body: ExportRequestBody): Promise<MinifluxEntry[]>
     }
     if (body.filter.categoryId) params.set("category_id", String(body.filter.categoryId));
     if (body.filter.feedId) params.set("feed_id", String(body.filter.feedId));
+    if (body.filter.tag) params.set("tags", body.filter.tag);
     if (body.filter.starred) params.set("starred", "true");
     if (body.filter.search) params.set("search", body.filter.search);
     if (body.filter.after) params.set("published_after", body.filter.after);

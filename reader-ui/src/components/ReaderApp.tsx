@@ -40,9 +40,12 @@ import {
   Sparkles,
   Square,
   Sun,
+  Tag,
   Trash2,
   X,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
+import { getTagStyle, type TagColorKey } from "@/lib/tag-colors";
 import { FeedPropertiesModal, type EditableFeed } from "./FeedModals";
 
 interface CategoryItem {
@@ -61,6 +64,13 @@ interface FeedItem {
   category: { id: number; title: string };
 }
 
+interface TagSidebarItem {
+  name: string;
+  color: TagColorKey;
+  total_count: number;
+  unread_count: number;
+}
+
 interface EntryListItem {
   id: number;
   feed_id: number;
@@ -71,6 +81,7 @@ interface EntryListItem {
   author: string;
   starred: boolean;
   reading_time: number;
+  tags?: string[];
   feed: {
     id: number;
     title: string;
@@ -95,25 +106,26 @@ type ViewScope =
   | { type: "all" }
   | { type: "starred" }
   | { type: "category"; id: number; title: string; starredOnly?: boolean }
-  | { type: "feed"; id: number; title: string; starredOnly?: boolean };
+  | { type: "feed"; id: number; title: string; starredOnly?: boolean }
+  | { type: "tag"; tag: string };
 
 function formatBadge(n: number): string {
   if (n > 999) return "1000+";
   return String(Math.max(0, n));
 }
 
-function formatRelTime(iso: string): string {
+function formatRelTime(iso: string, justNowLabel: string, dateLocale: string): string {
   const ts = Date.parse(iso);
   if (Number.isNaN(ts)) return "";
   const sec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (sec < 60) return "vừa xong";
+  if (sec < 60) return justNowLabel;
   const min = Math.floor(sec / 60);
   if (min < 60) return `${min}m`;
   const hr = Math.floor(min / 60);
   if (hr < 24) return `${hr}h`;
   const day = Math.floor(hr / 24);
   if (day < 30) return `${day}d`;
-  return new Date(ts).toLocaleDateString("vi-VN");
+  return new Date(ts).toLocaleDateString(dateLocale);
 }
 
 function FeedIcon({ feedId }: { feedId: number }) {
@@ -136,6 +148,9 @@ export default function ReaderApp({
 }: {
   passwordEnabled: boolean;
 }) {
+  const { locale, t } = useI18n();
+  const dateLocale = locale === "en" ? "en-US" : "vi-VN";
+
   // Sidebar & theme
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -144,9 +159,21 @@ export default function ReaderApp({
   // Dữ liệu sidebar
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [feeds, setFeeds] = useState<FeedItem[]>([]);
+  const [tagsList, setTagsList] = useState<TagSidebarItem[]>([]);
   const [totalUnread, setTotalUnread] = useState(0);
   const [starredTotal, setStarredTotal] = useState(0);
   const [expandedFolders, setExpandedFolders] = useState<Record<number, boolean>>({});
+  const [tagsExpanded, setTagsExpanded] = useState(true);
+
+  // Tagging UI state
+  const [cardTagPopover, setCardTagPopover] = useState<{
+    entryId: number;
+    input: string;
+  } | null>(null);
+  const [detailTagInput, setDetailTagInput] = useState("");
+  const [bulkTagInput, setBulkTagInput] = useState("");
+  const [bulkTagOpen, setBulkTagOpen] = useState(false);
+  const detailTagInputRef = useRef<HTMLInputElement | null>(null);
 
   // Bộ lọc danh sách bài
   const [scope, setScope] = useState<ViewScope>({ type: "all" });
@@ -214,6 +241,11 @@ export default function ReaderApp({
     document.documentElement.classList.toggle("dark", isDark);
 
     try {
+      const urlTag = new URLSearchParams(window.location.search).get("tag");
+      if (urlTag && urlTag.trim()) {
+        setScope({ type: "tag", tag: urlTag.trim() });
+        return;
+      }
       const startRaw = localStorage.getItem("rss-start-page");
       if (startRaw) {
         const parsed = JSON.parse(startRaw) as ViewScope;
@@ -252,11 +284,13 @@ export default function ReaderApp({
       const data = (await res.json()) as {
         categories: CategoryItem[];
         feeds: FeedItem[];
+        tags?: TagSidebarItem[];
         total_unread: number;
         starred_total: number;
       };
       setCategories(data.categories || []);
       setFeeds(data.feeds || []);
+      setTagsList(data.tags || []);
       setTotalUnread(data.total_unread || 0);
       setStarredTotal(data.starred_total || 0);
       setExpandedFolders((prev) => {
@@ -281,6 +315,7 @@ export default function ReaderApp({
       }
       if (scope.type === "category") p.set("category_id", String(scope.id));
       if (scope.type === "feed") p.set("feed_id", String(scope.id));
+      if (scope.type === "tag") p.set("tag", scope.tag);
       if (isStarredView) p.set("starred", "true");
       if (appliedSearch.trim()) p.set("search", appliedSearch.trim());
       if (afterDate) {
@@ -334,18 +369,25 @@ export default function ReaderApp({
           });
         }
       } catch {
-        showToast("Không tải được danh sách bài viết.");
+        showToast(t("toastLoadEntriesErr"));
       } finally {
         setLoadingList(false);
         setLoadingMore(false);
       }
     },
-    [buildFilterQuery, entries.length, showToast]
+    [buildFilterQuery, entries.length, showToast, t]
   );
 
   useEffect(() => {
     void loadSidebar();
   }, [loadSidebar]);
+
+  useEffect(() => {
+    if (!cardTagPopover) return;
+    const close = () => setCardTagPopover(null);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [cardTagPopover]);
 
   useEffect(() => {
     setArchiveExhausted(false);
@@ -384,25 +426,95 @@ export default function ReaderApp({
           error?: string;
         };
         if (!res.ok) {
-          showToast(data.error || "Không tải thêm được bài cũ.");
+          showToast(data.error || t("toastErrLoadMore"));
           return;
         }
         const added = data.added || 0;
         if (added > 0) {
           await Promise.all([loadEntries(false), loadSidebar()]);
-          showToast(`Đã tải thêm ${added} bài cũ hơn.`);
+          showToast(t("toastAddedOlder", { count: added }));
         } else {
           setArchiveExhausted(true);
-          showToast("Không còn bài cũ hơn từ nguồn này.");
+          showToast(t("toastNoMoreOlder"));
         }
         if (data.hasMore === false) {
           setArchiveExhausted(true);
         }
       } catch {
-        showToast("Lỗi khi tải thêm bài cũ từ nguồn.");
+        showToast(t("toastErrOlder"));
       } finally {
         setLoadingMore(false);
       }
+    }
+  };
+
+  const mutateEntryTag = useCallback(
+    async (entryId: number, action: { add?: string; remove?: string }) => {
+      try {
+        const res = await fetch(`/api/entries/${entryId}/tags`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(action),
+        });
+        if (!res.ok) throw new Error("err");
+        const data = (await res.json()) as { tags?: string[] };
+        const nextTags = data.tags || [];
+        setEntries((prev) =>
+          prev.map((e) => (e.id === entryId ? { ...e, tags: nextTags } : e))
+        );
+        setActiveEntry((prev) =>
+          prev && prev.id === entryId ? { ...prev, tags: nextTags } : prev
+        );
+        void loadSidebar();
+      } catch {
+        showToast(t("toastTagErr"));
+      }
+    },
+    [loadSidebar, showToast, t]
+  );
+
+  const handleBulkAddTag = async (rawTag: string) => {
+    const clean = rawTag.trim().replace(/^#+/, "");
+    const ids = Array.from(selectedIds);
+    if (!clean || ids.length === 0) return;
+    try {
+      const res = await fetch("/api/entries/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entryIds: ids, addTags: [clean] }),
+      });
+      if (!res.ok) throw new Error("err");
+      setEntries((prev) =>
+        prev.map((e) => {
+          if (!selectedIds.has(e.id)) return e;
+          const cur = e.tags || [];
+          return cur.includes(clean) ? e : { ...e, tags: [...cur, clean] };
+        })
+      );
+      setBulkTagInput("");
+      setBulkTagOpen(false);
+      showToast(t("toastBulkTagged", { tag: clean, count: ids.length }));
+      void loadSidebar();
+    } catch {
+      showToast(t("toastTagErr"));
+    }
+  };
+
+  const handleQuickCreateTag = async () => {
+    const raw = prompt(t("createQuickTagPrompt"));
+    const clean = (raw || "").trim().replace(/^#+/, "");
+    if (!clean) return;
+    try {
+      const res = await fetch("/api/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: clean }),
+      });
+      if (!res.ok) throw new Error("err");
+      await loadSidebar();
+      showToast(t("toastTagUpdated"));
+    } catch {
+      showToast(t("toastTagErr"));
     }
   };
 
@@ -423,10 +535,10 @@ export default function ReaderApp({
         });
         void loadSidebar();
       } catch {
-        showToast("Lỗi cập nhật trạng thái đọc.");
+        showToast(t("toastErrMarkStatus"));
       }
     },
-    [loadSidebar, showToast]
+    [loadSidebar, showToast, t]
   );
 
   // Đánh dấu đã đọc khi cuộn qua (tuỳ chọn U4)
@@ -475,12 +587,12 @@ export default function ReaderApp({
           void markEntriesStatus([item.id], "read");
         }
       } catch {
-        showToast("Không mở được nội dung bài viết.");
+        showToast(t("toastErrOpenArticle"));
       } finally {
         setLoadingDetail(false);
       }
     },
-    [markEntriesStatus, showToast]
+    [markEntriesStatus, showToast, t]
   );
 
   const toggleBookmark = useCallback(
@@ -495,10 +607,10 @@ export default function ReaderApp({
         await fetch(`/api/entries/${id}/bookmark`, { method: "PUT" });
         void loadSidebar();
       } catch {
-        showToast("Không cập nhật được bookmark.");
+        showToast(t("toastErrBookmark"));
       }
     },
-    [loadSidebar, showToast]
+    [loadSidebar, showToast, t]
   );
 
   const handleFetchFullContent = async () => {
@@ -511,9 +623,9 @@ export default function ReaderApp({
       if (!res.ok) throw new Error("err");
       const updated = (await res.json()) as EntryDetail;
       setActiveEntry(updated);
-      showToast("Đã lấy toàn văn bài viết.");
+      showToast(t("toastFetchedFull"));
     } catch {
-      showToast("Không lấy được toàn văn từ trang gốc.");
+      showToast(t("toastErrFetchedFull"));
     } finally {
       setFetchingFull(false);
     }
@@ -523,8 +635,9 @@ export default function ReaderApp({
     async (olderThanDays?: number) => {
       setMarkMenuOpen(false);
       const payload: {
-        scope: "all" | "category" | "feed";
+        scope: "all" | "category" | "feed" | "tag";
         id?: number;
+        tag?: string;
         olderThanDays?: number;
       } = {
         scope:
@@ -532,11 +645,14 @@ export default function ReaderApp({
             ? "category"
             : scope.type === "feed"
               ? "feed"
-              : "all",
+              : scope.type === "tag"
+                ? "tag"
+                : "all",
         id:
           scope.type === "category" || scope.type === "feed"
             ? scope.id
             : undefined,
+        tag: scope.type === "tag" ? scope.tag : undefined,
         olderThanDays,
       };
       try {
@@ -548,15 +664,15 @@ export default function ReaderApp({
         if (!res.ok) throw new Error("err");
         showToast(
           olderThanDays
-            ? `Đã đánh dấu đọc các bài cũ hơn ${olderThanDays} ngày.`
-            : "Đã đánh dấu tất cả là đã đọc."
+            ? t("toastMarkedOlderDays", { days: olderThanDays })
+            : t("toastMarkedAllRead")
         );
         await Promise.all([loadSidebar(), loadEntries(true)]);
       } catch {
-        showToast("Lỗi khi đánh dấu tất cả đã đọc.");
+        showToast(t("toastErrMarkAllRead"));
       }
     },
-    [scope, loadSidebar, loadEntries, showToast]
+    [scope, loadSidebar, loadEntries, showToast, t]
   );
 
   const handleRefreshFeeds = async () => {
@@ -575,16 +691,16 @@ export default function ReaderApp({
       });
       if (scope.type === "feed") {
         await Promise.all([loadSidebar(), loadEntries(true)]);
-        showToast(`Đã làm mới "${scope.title}".`);
+        showToast(t("toastRefreshedFeed", { title: scope.title }));
       } else {
-        showToast("Đã yêu cầu Miniflux quét lại các feed.");
+        showToast(t("toastRefreshedAll"));
         setTimeout(() => {
           void loadSidebar();
           void loadEntries(true);
         }, 1500);
       }
     } catch {
-      showToast("Không làm mới được feed.");
+      showToast(t("toastErrRefresh"));
     } finally {
       setRefreshingFeeds(false);
     }
@@ -593,9 +709,9 @@ export default function ReaderApp({
   const copyText = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      showToast(`Đã copy ${label}.`);
+      showToast(t("toastCopied", { label }));
     } catch {
-      showToast("Trình duyệt không cho phép copy tự động.");
+      showToast(t("toastErrCopy"));
     }
   };
 
@@ -617,9 +733,9 @@ export default function ReaderApp({
       await navigator.clipboard.write([
         new ClipboardItem({ "image/png": pngBlob }),
       ]);
-      showToast("Đã copy ảnh vào clipboard!");
+      showToast(t("toastCopiedImg"));
     } catch {
-      showToast("Không copy được ảnh trực tiếp, hãy thử tải ZIP ảnh.");
+      showToast(t("toastErrCopyImg"));
     }
   };
 
@@ -639,8 +755,8 @@ export default function ReaderApp({
     setSelectedIds(new Set(entries.map((e) => e.id)));
     showToast(
       totalEntries > entries.length
-        ? `Đã chọn toàn bộ theo bộ lọc hiện tại (tối đa 200 bài khi xuất ZIP).`
-        : `Đã chọn tất cả ${entries.length} bài.`
+        ? t("toastSelectedAllMax")
+        : t("toastSelectedAll", { count: entries.length })
     );
   };
 
@@ -654,6 +770,7 @@ export default function ReaderApp({
               status: scope.type !== "starred" && statusFilter === "unread" ? "unread" : undefined,
               categoryId: scope.type === "category" ? scope.id : undefined,
               feedId: scope.type === "feed" ? scope.id : undefined,
+              tag: scope.type === "tag" ? scope.tag : undefined,
               starred: scope.type === "starred" ? true : undefined,
               search: appliedSearch.trim() || undefined,
               after: afterDate
@@ -681,9 +798,9 @@ export default function ReaderApp({
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      showToast("Đã xuất file ZIP thành công!");
+      showToast(t("toastExportedZip"));
     } catch {
-      showToast("Lỗi khi xuất ZIP.");
+      showToast(t("toastErrZip"));
     } finally {
       setExporting(false);
     }
@@ -702,9 +819,9 @@ export default function ReaderApp({
       if (!res.ok) throw new Error("err");
       const data = (await res.json()) as { markdown: string; count: number };
       await navigator.clipboard.writeText(data.markdown);
-      showToast(`Đã copy ${data.count} bài thành một khối Markdown!`);
+      showToast(t("toastCopiedAllMd", { count: data.count }));
     } catch {
-      showToast("Lỗi copy Markdown hàng loạt.");
+      showToast(t("toastErrCopyMd"));
     } finally {
       setExporting(false);
     }
@@ -775,6 +892,9 @@ export default function ReaderApp({
         e.preventDefault();
         const target = activeEntry || entries[focusedIndex];
         if (target?.url) window.open(target.url, "_blank", "noopener,noreferrer");
+      } else if (e.key === "t" && activeEntry) {
+        e.preventDefault();
+        detailTagInputRef.current?.focus();
       }
     }
 
@@ -802,14 +922,23 @@ export default function ReaderApp({
     return map;
   }, [feeds]);
 
+  const tagColorMap = useMemo(() => {
+    const map = new Map<string, TagColorKey>();
+    for (const tg of tagsList) {
+      map.set(tg.name, tg.color);
+    }
+    return map;
+  }, [tagsList]);
+
   const currentHeading = useMemo(() => {
-    if (scope.type === "all") return "Newsfeed";
-    if (scope.type === "starred") return "Đã lưu";
+    if (scope.type === "all") return t("newsfeed");
+    if (scope.type === "starred") return t("saved");
+    if (scope.type === "tag") return `# ${scope.tag}`;
     if ((scope.type === "feed" || scope.type === "category") && scope.starredOnly) {
-      return `Đã lưu · ${scope.title}`;
+      return `${t("saved")} · ${scope.title}`;
     }
     return scope.title;
-  }, [scope]);
+  }, [scope, t]);
 
   const selectScope = (next: ViewScope) => {
     setScope(next);
@@ -818,10 +947,11 @@ export default function ReaderApp({
     setSelectAllByFilter(false);
     setMobileMenuOpen(false);
     setFeedMenu(null);
+    setCardTagPopover(null);
   };
 
   const handleCreateFolder = async () => {
-    const title = prompt("Tên thư mục mới:");
+    const title = prompt(t("createFolderPrompt"));
     if (!title || !title.trim()) return;
     const res = await fetch("/api/categories", {
       method: "POST",
@@ -829,10 +959,10 @@ export default function ReaderApp({
       body: JSON.stringify({ title: title.trim() }),
     });
     if (res.ok) {
-      showToast(`Đã tạo thư mục "${title.trim()}".`);
+      showToast(t("toastCreatedFolder", { title: title.trim() }));
       await loadSidebar();
     } else {
-      showToast("Không tạo được thư mục.");
+      showToast(t("toastErrCreateFolder"));
     }
   };
 
@@ -844,7 +974,7 @@ export default function ReaderApp({
   };
 
   const handleRenameFeed = async (feed: FeedItem) => {
-    const next = prompt("Đổi tên feed:", feed.title);
+    const next = prompt(`${t("renameFeed")}:`, feed.title);
     if (!next || next.trim() === feed.title) return;
     const res = await fetch(`/api/feeds/${feed.id}`, {
       method: "PUT",
@@ -852,10 +982,10 @@ export default function ReaderApp({
       body: JSON.stringify({ title: next.trim() }),
     });
     if (res.ok) {
-      showToast(`Đã đổi tên thành "${next.trim()}".`);
+      showToast(t("toastRenamedFeed", { title: next.trim() }));
       await loadSidebar();
     } else {
-      showToast("Không đổi tên được feed.");
+      showToast(t("toastErrRenameFeed"));
     }
   };
 
@@ -866,31 +996,31 @@ export default function ReaderApp({
       body: JSON.stringify({ category_id: categoryId }),
     });
     if (res.ok) {
-      showToast(`Đã chuyển "${feed.title}" sang thư mục mới.`);
+      showToast(t("toastMovedFeed", { title: feed.title }));
       await loadSidebar();
     } else {
-      showToast("Không chuyển được thư mục.");
+      showToast(t("toastErrMoveFeed"));
     }
   };
 
   const handleUnfollowFeed = async (feed: FeedItem) => {
-    if (!confirm(`Huỷ theo dõi "${feed.title}"?`)) return;
+    if (!confirm(`${t("unfollow")} "${feed.title}"?`)) return;
     const res = await fetch(`/api/feeds/${feed.id}`, { method: "DELETE" });
     if (res.ok) {
-      showToast(`Đã huỷ theo dõi "${feed.title}".`);
+      showToast(t("toastUnfollowed", { title: feed.title }));
       if (scope.type === "feed" && scope.id === feed.id) {
         selectScope({ type: "all" });
       }
       await Promise.all([loadSidebar(), loadEntries(true)]);
     } else {
-      showToast("Không huỷ theo dõi được feed.");
+      showToast(t("toastErrUnfollow"));
     }
   };
 
   const handleSetStartPage = (feed: FeedItem) => {
     const nextScope: ViewScope = { type: "feed", id: feed.id, title: feed.title };
     localStorage.setItem("rss-start-page", JSON.stringify(nextScope));
-    showToast(`Đã đặt "${feed.title}" làm trang mặc định khi mở.`);
+    showToast(t("toastSetStartPage", { title: feed.title }));
   };
 
   const handleLogout = async () => {
@@ -910,35 +1040,35 @@ export default function ReaderApp({
         <div className="flex items-center gap-0.5">
           <Link
             href="/manage"
-            title="Quản lý nội dung (Manage feeds)"
+            title={t("manageContent")}
             className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
           >
             <Settings className="w-3.5 h-3.5" />
           </Link>
           <button
             onClick={() => void handleCreateFolder()}
-            title="Tạo thư mục mới"
+            title={t("createFolderTitle")}
             className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
           >
             <FolderPlus className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={handleToggleAllFolders}
-            title="Thu gọn / mở rộng tất cả thư mục"
+            title={t("toggleAllFolders")}
             className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
           >
             <ChevronDown className="w-3.5 h-3.5" />
           </button>
           <Link
             href="/add"
-            title="Thêm nguồn mới"
+            title={t("addSource")}
             className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-green-600"
           >
             <Plus className="w-4 h-4" />
           </Link>
           <button
             onClick={() => void handleRefreshFeeds()}
-            title="Làm mới feeds"
+            title={t("refreshFeeds")}
             className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-slate-500"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${refreshingFeeds ? "animate-spin" : ""}`} />
@@ -963,7 +1093,7 @@ export default function ReaderApp({
         >
           <span className="flex items-center gap-2 truncate">
             <Home className="w-4 h-4 shrink-0" />
-            Newsfeed
+            {t("newsfeed")}
           </span>
           {totalUnread > 0 && (
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -982,7 +1112,7 @@ export default function ReaderApp({
         >
           <span className="flex items-center gap-2 truncate">
             <Bookmark className="w-4 h-4 shrink-0" />
-            Đã lưu
+            {t("saved")}
           </span>
           {starredTotal > 0 && (
             <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
@@ -992,7 +1122,7 @@ export default function ReaderApp({
         </button>
 
         <div className="pt-2 pb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-          Thư mục
+          {t("folders")}
         </div>
 
         {categories.map((cat) => {
@@ -1103,6 +1233,75 @@ export default function ReaderApp({
             </div>
           );
         })}
+
+        {/* Mục Tags phân loại thủ công */}
+        <div className="pt-3 pb-1 px-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          <button
+            onClick={() => setTagsExpanded((v) => !v)}
+            className="flex items-center gap-1 hover:text-slate-600 dark:hover:text-slate-200"
+          >
+            {tagsExpanded ? (
+              <ChevronDown className="w-3 h-3" />
+            ) : (
+              <ChevronRight className="w-3 h-3" />
+            )}
+            <span>{t("tags")}</span>
+          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => void handleQuickCreateTag()}
+              title={t("createQuickTagPrompt")}
+              className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hover:text-green-600"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+            <Link
+              href="/manage?tab=tags"
+              title={t("manageTags")}
+              className="p-0.5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+            >
+              <SlidersHorizontal className="w-3 h-3" />
+            </Link>
+          </div>
+        </div>
+
+        {tagsExpanded && (
+          <div className="space-y-0.5">
+            {tagsList.length === 0 ? (
+              <div className="px-2.5 py-1 text-[11px] text-slate-400">
+                {t("noTagsYet")}
+              </div>
+            ) : (
+              tagsList.map((tg) => {
+                const st = getTagStyle(tg.color);
+                const activeTag = scope.type === "tag" && scope.tag === tg.name;
+                return (
+                  <button
+                    key={tg.name}
+                    onClick={() => selectScope({ type: "tag", tag: tg.name })}
+                    className={`w-full flex items-center justify-between px-2.5 py-1 rounded-lg text-[13px] transition-colors ${
+                      activeTag
+                        ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
+                        : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${st.dot}`} />
+                      <span className="truncate">{tg.name}</span>
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 pl-1 shrink-0">
+                      {tg.unread_count > 0
+                        ? formatBadge(tg.unread_count)
+                        : tg.total_count > 0
+                          ? `· ${tg.total_count}`
+                          : ""}
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1114,14 +1313,14 @@ export default function ReaderApp({
         <div className="flex flex-col items-center gap-2">
           <button
             onClick={() => setSidebarOpen((v) => !v)}
-            title="Ẩn/hiện thanh Feeds"
+            title={t("toggleSidebar")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Menu className="w-4 h-4" />
           </button>
           <button
             onClick={() => selectScope({ type: "all" })}
-            title="Newsfeed"
+            title={t("newsfeed")}
             className={`p-2 rounded-lg ${
               scope.type === "all"
                 ? "bg-green-600 text-white"
@@ -1132,7 +1331,7 @@ export default function ReaderApp({
           </button>
           <button
             onClick={() => selectScope({ type: "starred" })}
-            title="Đã lưu"
+            title={t("saved")}
             className={`p-2 rounded-lg ${
               scope.type === "starred"
                 ? "bg-green-600 text-white"
@@ -1146,14 +1345,14 @@ export default function ReaderApp({
               setShowFilters((v) => !v);
               setTimeout(() => searchInputRef.current?.focus(), 50);
             }}
-            title="Tìm kiếm (phím /)"
+            title={`${t("search")} (/)`}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Search className="w-4 h-4" />
           </button>
           <Link
             href="/add"
-            title="Thêm nguồn mới"
+            title={t("addSource")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Plus className="w-4 h-4" />
@@ -1163,21 +1362,21 @@ export default function ReaderApp({
         <div className="flex flex-col items-center gap-2">
           <Link
             href="/manage"
-            title="Quản lý nội dung (Content)"
+            title={t("manageContent")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Settings className="w-4 h-4" />
           </Link>
           <Link
             href="/status"
-            title="Trạng thái hệ thống"
+            title={t("systemStatus")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Activity className="w-4 h-4" />
           </Link>
           <button
             onClick={toggleTheme}
-            title="Chế độ sáng / tối"
+            title={t("darkMode")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -1185,7 +1384,7 @@ export default function ReaderApp({
           {passwordEnabled && (
             <button
               onClick={() => void handleLogout()}
-              title="Đăng xuất"
+              title={t("logout")}
               className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
             >
               <LogOut className="w-4 h-4" />
@@ -1237,11 +1436,11 @@ export default function ReaderApp({
               <div className="relative flex items-center">
                 <button
                   onClick={() => void handleMarkAllRead()}
-                  title="Đánh dấu tất cả đã đọc (Shift+A)"
+                  title={t("markAllReadTitle")}
                   className="inline-flex items-center gap-1 px-2 py-1.5 rounded-l-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium"
                 >
                   <CheckCheck className="w-3.5 h-3.5 text-green-600" />
-                  <span className="hidden lg:inline">Đọc hết</span>
+                  <span className="hidden lg:inline">{t("markAllRead")}</span>
                 </button>
                 <button
                   onClick={() => setMarkMenuOpen((v) => !v)}
@@ -1255,19 +1454,19 @@ export default function ReaderApp({
                       onClick={() => void handleMarkAllRead()}
                       className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
                     >
-                      Đánh dấu tất cả đã đọc
+                      {t("markAllAsReadMenu")}
                     </button>
                     <button
                       onClick={() => void handleMarkAllRead(1)}
                       className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
                     >
-                      Cũ hơn 1 ngày
+                      {t("olderThan1Day")}
                     </button>
                     <button
                       onClick={() => void handleMarkAllRead(7)}
                       className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
                     >
-                      Cũ hơn 1 tuần
+                      {t("olderThan1Week")}
                     </button>
                   </div>
                 )}
@@ -1286,7 +1485,7 @@ export default function ReaderApp({
                       : "text-slate-600 dark:text-slate-400"
                   }`}
                 >
-                  Chưa đọc
+                  {t("unread")}
                 </button>
                 <button
                   onClick={() => setStatusFilter("all")}
@@ -1296,7 +1495,7 @@ export default function ReaderApp({
                       : "text-slate-600 dark:text-slate-400"
                   }`}
                 >
-                  Tất cả
+                  {t("all")}
                 </button>
               </div>
             )}
@@ -1304,14 +1503,14 @@ export default function ReaderApp({
             {/* Đọc khi cuộn */}
             <button
               onClick={() => setMarkOnScroll((v) => !v)}
-              title="Tự động đánh dấu đã đọc khi cuộn qua"
+              title={t("markOnScrollTitle")}
               className={`hidden sm:inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs ${
                 markOnScroll
                   ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300"
                   : "border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400"
               }`}
             >
-              Đọc khi cuộn
+              {t("markOnScroll")}
             </button>
 
             {/* Chọn nhiều */}
@@ -1322,9 +1521,10 @@ export default function ReaderApp({
                 if (!next) {
                   setSelectedIds(new Set());
                   setSelectAllByFilter(false);
+                  setBulkTagOpen(false);
                 }
               }}
-              title="Chế độ chọn nhiều bài để xuất ZIP"
+              title={t("selectTitle")}
               className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs ${
                 selectMode
                   ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-medium"
@@ -1332,13 +1532,13 @@ export default function ReaderApp({
               }`}
             >
               <CheckSquare className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Chọn</span>
+              <span className="hidden sm:inline">{t("select")}</span>
             </button>
 
             {/* Tìm kiếm */}
             <button
               onClick={() => setShowFilters((v) => !v)}
-              title="Tìm kiếm & lọc ngày"
+              title={t("searchFilterTitle")}
               className={`p-1.5 rounded-lg border ${
                 showFilters || appliedSearch || afterDate || beforeDate
                   ? "border-green-500 text-green-600"
@@ -1351,7 +1551,7 @@ export default function ReaderApp({
             {/* Làm mới */}
             <button
               onClick={() => void handleRefreshFeeds()}
-              title="Làm mới feeds"
+              title={t("refreshFeeds")}
               className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <RefreshCw className={`w-4 h-4 ${refreshingFeeds ? "animate-spin" : ""}`} />
@@ -1361,14 +1561,14 @@ export default function ReaderApp({
             <Link
               href="/add"
               className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-green-600"
-              title="Thêm nguồn mới"
+              title={t("addSource")}
             >
               <Plus className="w-4 h-4" />
             </Link>
             <Link
               href="/status"
               className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800"
-              title="Trạng thái"
+              title={t("systemStatus")}
             >
               <Activity className="w-4 h-4" />
             </Link>
@@ -1396,26 +1596,26 @@ export default function ReaderApp({
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Tìm từ khoá trong tiêu đề hoặc nội dung..."
+                placeholder={t("searchPlaceholder")}
                 className="flex-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-green-500"
               />
               <button
                 type="submit"
                 className="px-3 py-1.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700"
               >
-                Tìm
+                {t("search")}
               </button>
             </form>
 
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-500">Từ:</span>
+              <span className="text-slate-500">{t("fromDate")}</span>
               <input
                 type="date"
                 value={afterDate}
                 onChange={(e) => setAfterDate(e.target.value)}
                 className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
               />
-              <span className="text-slate-500">Đến:</span>
+              <span className="text-slate-500">{t("toDate")}</span>
               <input
                 type="date"
                 value={beforeDate}
@@ -1432,28 +1632,28 @@ export default function ReaderApp({
                   }}
                   className="px-2 py-1 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-800"
                 >
-                  Xoá lọc
+                  {t("clearFilter")}
                 </button>
               )}
             </div>
           </div>
         )}
 
-        {/* Thanh hành động chọn nhiều (B1-B3) */}
+        {/* Thanh hành động chọn nhiều (B1-B3 + Bulk Tag) */}
         {(selectMode || selectedIds.size > 0) && (
           <div className="px-3 md:px-5 py-2 border-b border-green-200 dark:border-green-900 bg-green-50/90 dark:bg-green-950/50 flex flex-wrap items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-green-800 dark:text-green-200">
-                Đã chọn {selectedIds.size} bài
+                {t("selectedArticlesCount", { count: selectedIds.size })}
                 {selectAllByFilter && totalEntries > entries.length
-                  ? ` (áp dụng toàn bộ bộ lọc ~${Math.min(totalEntries, 200)} bài)`
+                  ? t("applyAllFilterSuffix", { max: Math.min(totalEntries, 200) })
                   : ""}
               </span>
               <button
                 onClick={handleSelectAllFiltered}
                 className="px-2 py-1 rounded bg-white dark:bg-slate-900 border border-green-300 dark:border-green-800 hover:bg-green-100 dark:hover:bg-green-900"
               >
-                Chọn tất cả theo bộ lọc
+                {t("selectAllByFilter")}
               </button>
               <button
                 onClick={() => {
@@ -1462,18 +1662,73 @@ export default function ReaderApp({
                 }}
                 className="px-2 py-1 rounded hover:underline text-slate-600 dark:text-slate-300"
               >
-                Bỏ chọn
+                {t("deselect")}
               </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-1.5 relative">
+              <div className="relative">
+                <button
+                  onClick={() => setBulkTagOpen((v) => !v)}
+                  disabled={selectedIds.size === 0}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 font-medium"
+                >
+                  <Tag className="w-3.5 h-3.5 text-green-600" />
+                  {t("bulkTagBtn")}
+                </button>
+                {bulkTagOpen && selectedIds.size > 0 && (
+                  <div className="absolute right-0 top-full mt-1 w-64 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-2.5 z-40 space-y-2">
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void handleBulkAddTag(bulkTagInput);
+                      }}
+                      className="flex gap-1"
+                    >
+                      <input
+                        type="text"
+                        value={bulkTagInput}
+                        onChange={(e) => setBulkTagInput(e.target.value)}
+                        placeholder={t("bulkTagPlaceholder")}
+                        autoFocus
+                        className="flex-1 min-w-0 px-2.5 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                      />
+                      <button
+                        type="submit"
+                        className="px-2.5 py-1 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700"
+                      >
+                        {t("apply")}
+                      </button>
+                    </form>
+                    {tagsList.length > 0 && (
+                      <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto pt-1">
+                        {tagsList.map((tg) => {
+                          const st = getTagStyle(tg.color);
+                          return (
+                            <button
+                              key={tg.name}
+                              type="button"
+                              onClick={() => void handleBulkAddTag(tg.name)}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] hover:opacity-80 ${st.badge}`}
+                            >
+                              <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
+                              {tg.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <button
                 onClick={() => void handleExportZip()}
                 disabled={exporting || (selectedIds.size === 0 && !selectAllByFilter)}
                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-medium"
               >
                 <FileArchive className="w-3.5 h-3.5" />
-                {exporting ? "Đang nén..." : "Xuất ZIP (MD + ảnh + CSV)"}
+                {exporting ? t("compressing") : t("exportZip")}
               </button>
               <button
                 onClick={() => void handleCopyAllMarkdown()}
@@ -1481,7 +1736,7 @@ export default function ReaderApp({
                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50 font-medium"
               >
                 <Copy className="w-3.5 h-3.5" />
-                Copy tất cả Markdown
+                {t("copyAllMarkdown")}
               </button>
               <button
                 onClick={() => void markEntriesStatus(Array.from(selectedIds), "read")}
@@ -1489,7 +1744,7 @@ export default function ReaderApp({
                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
               >
                 <Check className="w-3.5 h-3.5" />
-                Đánh dấu đã đọc
+                {t("markAsRead")}
               </button>
             </div>
           </div>
@@ -1509,11 +1764,9 @@ export default function ReaderApp({
           ) : entries.length === 0 ? (
             <div className="max-w-md mx-auto py-16 text-center space-y-2 text-slate-500">
               <p className="text-base font-medium text-slate-700 dark:text-slate-300">
-                Không có bài viết nào
+                {t("noArticles")}
               </p>
-              <p className="text-sm">
-                Thử chuyển sang mục &ldquo;Tất cả&rdquo; hoặc nhấn làm mới để quét thêm tin.
-              </p>
+              <p className="text-sm">{t("noArticlesHint")}</p>
             </div>
           ) : (
             <div className="max-w-4xl mx-auto divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -1580,7 +1833,7 @@ export default function ReaderApp({
                         >
                           {item.title}
                         </h2>
-                        <div className="mt-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
                           <span className="font-medium truncate max-w-[200px]">
                             {item.feed.title}
                           </span>
@@ -1589,7 +1842,24 @@ export default function ReaderApp({
                               {item.feed.category.title}
                             </span>
                           )}
-                          <span>· {formatRelTime(item.published_at)}</span>
+                          {(item.tags || []).map((tagName) => {
+                            const st = getTagStyle(tagColorMap.get(tagName));
+                            return (
+                              <button
+                                key={tagName}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  selectScope({ type: "tag", tag: tagName });
+                                }}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-medium hover:opacity-80 ${st.badge}`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
+                                {tagName}
+                              </button>
+                            );
+                          })}
+                          <span>· {formatRelTime(item.published_at, t("justNow"), dateLocale)}</span>
                         </div>
                         {item.excerpt && (
                           <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
@@ -1602,12 +1872,29 @@ export default function ReaderApp({
                     {/* Nút thao tác nhanh trên thẻ */}
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className="flex flex-col items-end justify-between shrink-0 gap-1"
+                      className="flex flex-col items-end justify-between shrink-0 gap-1 relative"
                     >
                       <div className="flex items-center gap-1">
                         <button
+                          onClick={() =>
+                            setCardTagPopover((prev) =>
+                              prev?.entryId === item.id
+                                ? null
+                                : { entryId: item.id, input: "" }
+                            )
+                          }
+                          title={t("chooseTagsTitle")}
+                          className={`p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 ${
+                            (item.tags || []).length > 0
+                              ? "text-green-600"
+                              : "text-slate-400"
+                          }`}
+                        >
+                          <Tag className="w-3.5 h-3.5" />
+                        </button>
+                        <button
                           onClick={() => void toggleBookmark(item.id)}
-                          title="Lưu bài viết (s)"
+                          title={t("bookmarkTitle")}
                           className={`p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 ${
                             item.starred ? "text-amber-500" : "text-slate-400"
                           }`}
@@ -1624,7 +1911,7 @@ export default function ReaderApp({
                               isUnread ? "read" : "unread"
                             )
                           }
-                          title="Đánh dấu đã đọc / chưa đọc (m)"
+                          title={t("toggleReadTitle")}
                           className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400"
                         >
                           <span
@@ -1639,12 +1926,80 @@ export default function ReaderApp({
                           href={item.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          title="Mở bài gốc (v)"
+                          title={t("openOriginalTitle")}
                           className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hidden sm:inline-flex"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       </div>
+
+                      {cardTagPopover?.entryId === item.id && (
+                        <div className="absolute right-0 top-8 z-40 w-60 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-2.5 space-y-2">
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const next = cardTagPopover.input.trim();
+                              if (!next) return;
+                              void mutateEntryTag(item.id, { add: next });
+                              setCardTagPopover({ entryId: item.id, input: "" });
+                            }}
+                            className="flex gap-1"
+                          >
+                            <input
+                              type="text"
+                              value={cardTagPopover.input}
+                              onChange={(e) =>
+                                setCardTagPopover({
+                                  entryId: item.id,
+                                  input: e.target.value,
+                                })
+                              }
+                              placeholder={t("tagInputPlaceholder")}
+                              autoFocus
+                              className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                            />
+                            <button
+                              type="submit"
+                              className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700"
+                            >
+                              +
+                            </button>
+                          </form>
+                          {tagsList.length > 0 && (
+                            <div className="max-h-40 overflow-y-auto space-y-0.5 text-xs">
+                              {tagsList.map((tg) => {
+                                const hasTag = (item.tags || []).includes(tg.name);
+                                const st = getTagStyle(tg.color);
+                                return (
+                                  <button
+                                    key={tg.name}
+                                    type="button"
+                                    onClick={() =>
+                                      void mutateEntryTag(
+                                        item.id,
+                                        hasTag
+                                          ? { remove: tg.name }
+                                          : { add: tg.name }
+                                      )
+                                    }
+                                    className="w-full flex items-center justify-between px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                                  >
+                                    <span className="flex items-center gap-1.5 min-w-0">
+                                      <span
+                                        className={`w-2 h-2 rounded-full shrink-0 ${st.dot}`}
+                                      />
+                                      <span className="truncate">{tg.name}</span>
+                                    </span>
+                                    {hasTag && (
+                                      <Check className="w-3.5 h-3.5 text-green-600 shrink-0" />
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </article>
                 );
@@ -1654,7 +2009,7 @@ export default function ReaderApp({
               <div ref={loadMoreRef} className="py-6 text-center">
                 {loadingMore ? (
                   <span className="text-xs text-slate-400">
-                    Đang tải thêm bài cũ hơn...
+                    {t("loadingMore")}
                   </span>
                 ) : entries.length < totalEntries ||
                   (activeFeedSupportsArchive && !archiveExhausted) ? (
@@ -1662,10 +2017,10 @@ export default function ReaderApp({
                     onClick={() => void handleLoadMore()}
                     className="px-5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold shadow-sm transition-colors"
                   >
-                    Xem thêm (~20 bài cũ hơn)
+                    {t("loadMoreBtn")}
                   </button>
                 ) : (
-                  <span className="text-xs text-slate-400">Đã hiển thị hết danh sách</span>
+                  <span className="text-xs text-slate-400">{t("endOfList")}</span>
                 )}
               </div>
             </div>
@@ -1686,7 +2041,7 @@ export default function ReaderApp({
                   <button
                     onClick={() => setActiveEntry(null)}
                     className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
-                    title="Đóng (Esc)"
+                    title={`${t("close")} (Esc)`}
                   >
                     <ChevronLeft className="w-5 h-5 md:hidden" />
                     <X className="w-4 h-4 hidden md:block" />
@@ -1698,7 +2053,7 @@ export default function ReaderApp({
                       }
                     }}
                     disabled={focusedIndex <= 0}
-                    title="Bài trước (k)"
+                    title={t("prevArticleTitle")}
                     className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
                   >
                     <ChevronUp className="w-4 h-4" />
@@ -1710,7 +2065,7 @@ export default function ReaderApp({
                       }
                     }}
                     disabled={focusedIndex >= entries.length - 1}
-                    title="Bài tiếp (j)"
+                    title={t("nextArticleTitle")}
                     className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
                   >
                     <ChevronDown className="w-4 h-4" />
@@ -1725,11 +2080,11 @@ export default function ReaderApp({
                       className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium disabled:opacity-50"
                     >
                       <Sparkles className="w-3.5 h-3.5 text-green-600" />
-                      {fetchingFull ? "Đang lấy..." : "Lấy toàn văn"}
+                      {fetchingFull ? t("fetchingFullText") : t("fetchFullText")}
                     </button>
                     <button
                       onClick={() => void toggleBookmark(activeEntry.id)}
-                      title="Lưu bài viết (s)"
+                      title={t("bookmarkTitle")}
                       className={`p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 ${
                         activeEntry.starred ? "text-amber-500" : "text-slate-500"
                       }`}
@@ -1746,16 +2101,16 @@ export default function ReaderApp({
                           activeEntry.status === "unread" ? "read" : "unread"
                         )
                       }
-                      title="Đánh dấu đã đọc / chưa đọc (m)"
+                      title={t("toggleReadTitle")}
                       className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs"
                     >
-                      {activeEntry.status === "unread" ? "Chưa đọc" : "Đã đọc"}
+                      {activeEntry.status === "unread" ? t("unread") : t("read")}
                     </button>
                     <a
                       href={activeEntry.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      title="Mở bài gốc (v)"
+                      title={t("openOriginalTitle")}
                       className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
                     >
                       <ExternalLink className="w-4 h-4" />
@@ -1771,25 +2126,25 @@ export default function ReaderApp({
                     onClick={() =>
                       void copyText(
                         `${activeEntry.title}\n\n${activeEntry.plain_text}`,
-                        "text bài viết"
+                        "text"
                       )
                     }
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     <FileText className="w-3.5 h-3.5" />
-                    Copy text
+                    {t("copyText")}
                   </button>
                   <button
                     onClick={() =>
                       void copyText(
-                        `# ${activeEntry.title}\n\nNguồn: ${activeEntry.feed.title} (${activeEntry.url})\n\n${activeEntry.markdown}`,
+                        `# ${activeEntry.title}\n\nSource: ${activeEntry.feed.title} (${activeEntry.url})\n\n${activeEntry.markdown}`,
                         "Markdown"
                       )
                     }
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     <Copy className="w-3.5 h-3.5" />
-                    Copy Markdown
+                    {t("copyMarkdown")}
                   </button>
                   <button
                     onClick={() =>
@@ -1801,7 +2156,7 @@ export default function ReaderApp({
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     <Copy className="w-3.5 h-3.5" />
-                    Copy text + link
+                    {t("copyTextLink")}
                   </button>
                   {activeEntry.images.length > 0 && (
                     <a
@@ -1809,11 +2164,11 @@ export default function ReaderApp({
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-green-600 text-white hover:bg-green-700 font-medium"
                     >
                       <Download className="w-3.5 h-3.5" />
-                      Tải tất cả ảnh ({activeEntry.images.length})
+                      {t("downloadAllImages", { count: activeEntry.images.length })}
                     </a>
                   )}
                   <span className="text-[11px] text-slate-400 ml-auto hidden sm:inline">
-                    Mẹo: bấm trực tiếp vào ảnh bên dưới để copy ảnh
+                    {t("copyImageTip")}
                   </span>
                 </div>
               )}
@@ -1834,11 +2189,11 @@ export default function ReaderApp({
                       </span>
                       {activeEntry.author && <span>· {activeEntry.author}</span>}
                       <span>
-                        · {new Date(activeEntry.published_at).toLocaleString("vi-VN")}
+                        · {new Date(activeEntry.published_at).toLocaleString(dateLocale)}
                       </span>
                     </div>
 
-                    <h1 className="text-2xl font-bold leading-tight mb-6">
+                    <h1 className="text-2xl font-bold leading-tight mb-4">
                       <a
                         href={activeEntry.url}
                         target="_blank"
@@ -1848,6 +2203,65 @@ export default function ReaderApp({
                         {activeEntry.title}
                       </a>
                     </h1>
+
+                    {/* Thanh gắn Tag thủ công cho bài đang đọc */}
+                    <div className="mb-6 flex flex-wrap items-center gap-1.5 text-xs">
+                      <Tag className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      {(activeEntry.tags || []).map((tagName) => {
+                        const st = getTagStyle(tagColorMap.get(tagName));
+                        return (
+                          <span
+                            key={tagName}
+                            className={`inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full border font-medium ${st.badge}`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => selectScope({ type: "tag", tag: tagName })}
+                              className="hover:underline"
+                            >
+                              {tagName}
+                            </button>
+                            <button
+                              type="button"
+                              title={t("removeTagTitle")}
+                              onClick={() =>
+                                void mutateEntryTag(activeEntry.id, {
+                                  remove: tagName,
+                                })
+                              }
+                              className="p-0.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        );
+                      })}
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const next = detailTagInput.trim();
+                          if (!next) return;
+                          void mutateEntryTag(activeEntry.id, { add: next });
+                          setDetailTagInput("");
+                        }}
+                        className="inline-flex items-center gap-1"
+                      >
+                        <input
+                          ref={detailTagInputRef}
+                          type="text"
+                          list="rss-existing-tags-list"
+                          value={detailTagInput}
+                          onChange={(e) => setDetailTagInput(e.target.value)}
+                          placeholder={t("addTag")}
+                          className="w-28 focus:w-44 transition-all px-2.5 py-0.5 rounded-full border border-dashed border-slate-300 dark:border-slate-700 bg-transparent text-xs focus:outline-none focus:border-green-500"
+                        />
+                      </form>
+                      <datalist id="rss-existing-tags-list">
+                        {tagsList.map((tg) => (
+                          <option key={tg.name} value={tg.name} />
+                        ))}
+                      </datalist>
+                    </div>
 
                     {activeEntry.youtube_embed_id && (
                       <div className="mb-5 aspect-video w-full overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800 bg-black">
@@ -1913,7 +2327,7 @@ export default function ReaderApp({
             className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2"
           >
             <SlidersHorizontal className="w-3.5 h-3.5 text-slate-400" />
-            Thuộc tính feed
+            {t("feedProperties")}
           </button>
           <button
             onClick={() => {
@@ -1923,7 +2337,7 @@ export default function ReaderApp({
             }}
             className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
           >
-            Đổi tên feed
+            {t("renameFeed")}
           </button>
           <button
             onClick={() => {
@@ -1933,7 +2347,7 @@ export default function ReaderApp({
             }}
             className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
           >
-            Đặt làm trang mặc định
+            {t("setStartPage")}
           </button>
 
           {/* Submenu chuyển thư mục */}
@@ -1946,7 +2360,7 @@ export default function ReaderApp({
               }
               className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-between"
             >
-              <span>Chuyển vào thư mục</span>
+              <span>{t("moveToFolder")}</span>
               <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
             </button>
             {feedMenu.showFolders && (
@@ -1984,7 +2398,7 @@ export default function ReaderApp({
             className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2"
           >
             <Filter className="w-3.5 h-3.5 text-slate-400" />
-            Lọc bài feed
+            {t("filterFeed")}
           </button>
           <button
             onClick={() => {
@@ -1995,7 +2409,7 @@ export default function ReaderApp({
             className="w-full px-3.5 py-2 text-left hover:bg-red-50 dark:hover:bg-red-950/40 text-red-600 dark:text-red-400 flex items-center gap-2"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Huỷ theo dõi
+            {t("unfollow")}
           </button>
           <button
             onClick={() => {
@@ -2011,7 +2425,7 @@ export default function ReaderApp({
             className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2"
           >
             <Bookmark className="w-3.5 h-3.5 text-slate-400" />
-            Chỉ xem bài đã lưu
+            {t("viewSavedOnly")}
           </button>
 
           <div className="my-1 border-t border-slate-200 dark:border-slate-800" />
@@ -2021,7 +2435,7 @@ export default function ReaderApp({
             className="w-full px-3.5 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 font-medium"
           >
             <Settings className="w-3.5 h-3.5 text-slate-400" />
-            Quản lý feeds (Content)
+            {t("manageContent")}
           </Link>
         </div>
       )}

@@ -30,11 +30,16 @@ export async function POST(req: NextRequest) {
 
     const blocks = entries.map((e, index) => {
       const md = htmlToMarkdown(e.content || "");
+      const tagsLine =
+        Array.isArray(e.tags) && e.tags.length > 0
+          ? `- **Tags:** ${e.tags.join(", ")}`
+          : null;
       return [
         `## ${index + 1}. ${e.title}`,
         `- **Nguồn:** ${e.feed?.title || ""}`,
         `- **Ngày:** ${e.published_at}`,
         `- **Liên kết:** ${e.url}`,
+        ...(tagsLine ? [tagsLine] : []),
         "",
         md,
       ].join("\n");

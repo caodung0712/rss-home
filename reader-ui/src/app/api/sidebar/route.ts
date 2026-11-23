@@ -7,6 +7,7 @@ import {
   type MinifluxEntriesResponse,
   type MinifluxFeed,
 } from "@/lib/miniflux";
+import { listTagsSummary } from "@/lib/tags";
 
 export async function GET() {
   if (!(await isAuthenticated())) {
@@ -14,11 +15,12 @@ export async function GET() {
   }
 
   try {
-    const [categories, feeds, counters, starred] = await Promise.all([
+    const [categories, feeds, counters, starred, tags] = await Promise.all([
       minifluxFetch<MinifluxCategory[]>("/v1/categories?counts=true"),
       minifluxFetch<MinifluxFeed[]>("/v1/feeds"),
       minifluxFetch<MinifluxCountersResponse>("/v1/feeds/counters"),
       minifluxFetch<MinifluxEntriesResponse>("/v1/entries?starred=true&limit=1"),
+      listTagsSummary().catch(() => []),
     ]);
 
     const totalUnread = Object.values(counters.unreads || {}).reduce((acc, v) => acc + v, 0);
@@ -32,6 +34,7 @@ export async function GET() {
       })),
       total_unread: totalUnread,
       starred_total: starred.total || 0,
+      tags,
     });
   } catch (err) {
     return NextResponse.json(

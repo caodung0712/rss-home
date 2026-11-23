@@ -1,22 +1,6 @@
 import crypto from "node:crypto";
 import * as cheerio from "cheerio";
-import { Pool } from "pg";
-
-let pool: Pool | null = null;
-
-function getPool(): Pool | null {
-  const connStr = (process.env.DATABASE_URL || "").trim();
-  if (!connStr) return null;
-  if (!pool) {
-    pool = new Pool({
-      connectionString: connStr,
-      max: 4,
-      idleTimeoutMillis: 15000,
-      connectionTimeoutMillis: 4000,
-    });
-  }
-  return pool;
-}
+import { getDbPool } from "./db";
 
 function sha256Hex(input: string): string {
   return crypto.createHash("sha256").update(input, "utf8").digest("hex");
@@ -191,7 +175,7 @@ export async function loadOlderArchiveEntries(
   hasMore: boolean;
   message?: string;
 }> {
-  const p = getPool();
+  const p = getDbPool();
   if (!p) {
     return { supported: false, added: 0, hasMore: false, message: "Thiếu DATABASE_URL" };
   }

@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Twitter,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 interface StatusPayload {
   checked_at: string;
@@ -49,6 +50,8 @@ interface StatusPayload {
 }
 
 export default function StatusDashboard() {
+  const { locale, t } = useI18n();
+  const dateLocale = locale === "en" ? "en-US" : "vi-VN";
   const [data, setData] = useState<StatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -83,11 +86,11 @@ export default function StatusDashboard() {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <ArrowLeft className="w-4 h-4" />
-              Quay lại đọc tin
+              {t("statusBackBtn")}
             </Link>
             <h1 className="text-xl font-bold flex items-center gap-2">
               <Activity className="w-5 h-5 text-green-600" />
-              Trạng thái hệ thống
+              {t("statusTitle")}
             </h1>
           </div>
 
@@ -97,13 +100,13 @@ export default function StatusDashboard() {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium disabled:opacity-60"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-            Kiểm tra lại
+            {t("statusRecheck")}
           </button>
         </div>
 
         {!data && loading ? (
           <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 text-center text-sm text-slate-500">
-            Đang tải trạng thái hệ thống...
+            {t("statusLoading")}
           </div>
         ) : data ? (
           <>
@@ -112,7 +115,7 @@ export default function StatusDashboard() {
               <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-slate-500">
-                    Miniflux & Feeds
+                    {t("statusMinifluxFeeds")}
                   </span>
                   {data.miniflux_ok && data.broken_feeds.length === 0 ? (
                     <CheckCircle2 className="w-5 h-5 text-green-600" />
@@ -125,8 +128,8 @@ export default function StatusDashboard() {
                 </div>
                 <p className="text-xs text-slate-500">
                   {data.miniflux_ok
-                    ? `${data.broken_feeds.length} feed đang lỗi`
-                    : data.miniflux_error || "Mất kết nối Miniflux"}
+                    ? t("statusBrokenCount", { count: data.broken_feeds.length })
+                    : data.miniflux_error || t("statusMinifluxLost")}
                 </p>
               </div>
 
@@ -134,7 +137,7 @@ export default function StatusDashboard() {
               <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-slate-500">
-                    Cookie X (Twitter)
+                    {t("statusXCookie")}
                   </span>
                   <Twitter
                     className={`w-5 h-5 ${
@@ -144,15 +147,18 @@ export default function StatusDashboard() {
                 </div>
                 <div className="text-2xl font-bold">
                   {data.x_status.total === 0
-                    ? "Chưa thêm"
+                    ? t("statusXNone")
                     : data.x_status.cookie_expired
-                      ? "Hết hạn"
-                      : "Bình thường"}
+                      ? t("statusXExpired")
+                      : t("statusXOk")}
                 </div>
                 <p className="text-xs text-slate-500">
                   {data.x_status.total === 0
-                    ? "Chưa có feed X nào trong Miniflux"
-                    : `${data.x_status.broken}/${data.x_status.total} feed X lỗi`}
+                    ? t("statusXEmpty")
+                    : t("statusXSummary", {
+                        broken: data.x_status.broken,
+                        total: data.x_status.total,
+                      })}
                 </p>
               </div>
 
@@ -160,19 +166,19 @@ export default function StatusDashboard() {
               <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium text-slate-500">
-                    Sao lưu Postgres
+                    {t("statusBackupTitle")}
                   </span>
                   <Database className="w-5 h-5 text-indigo-500" />
                 </div>
                 <div className="text-base font-semibold truncate">
                   {data.latest_backup
-                    ? new Date(data.latest_backup.modified_at).toLocaleString("vi-VN")
-                    : "Chưa có bản sao lưu"}
+                    ? new Date(data.latest_backup.modified_at).toLocaleString(dateLocale)
+                    : t("statusBackupNone")}
                 </div>
                 <p className="text-xs text-slate-500 truncate">
                   {data.latest_backup
                     ? `${data.latest_backup.file} (${(data.latest_backup.size_bytes / 1024).toFixed(1)} KB)`
-                    : "Chạy `make backup` để sao lưu ngay"}
+                    : t("statusBackupHint")}
                 </p>
               </div>
             </div>
@@ -182,7 +188,7 @@ export default function StatusDashboard() {
               <div className="flex items-center justify-between">
                 <h2 className="font-semibold flex items-center gap-2">
                   <DollarSign className="w-4 h-4 text-green-600" />
-                  Chi phí Apify tháng này
+                  {t("statusApifyTitle")}
                 </h2>
                 <span className="text-sm font-medium">
                   ${spend.toFixed(2)} / ${budget.toFixed(2)} ({Number(usage.percent || 0).toFixed(1)}%)
@@ -200,12 +206,12 @@ export default function StatusDashboard() {
 
               {usage.warning_over_80 && (
                 <p className="text-xs text-red-600 dark:text-red-400 font-medium">
-                  ⚠️ Đã dùng vượt 80% ngân sách miễn phí ($5/tháng). Hãy giảm resultsLimit hoặc bớt trang ít ưu tiên.
+                  {t("statusApifyWarn")}
                 </p>
               )}
               {!usage.configured && (
                 <p className="text-xs text-slate-500">
-                  {usage.message || "Chưa cấu hình APIFY_TOKEN trong .env."}
+                  {usage.message || t("statusApifyMissing")}
                 </p>
               )}
               {usage.error && (
@@ -217,16 +223,17 @@ export default function StatusDashboard() {
             <div className="rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden">
               <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
                 <h2 className="font-semibold">
-                  Feed đang lỗi ({data.broken_feeds.length})
+                  {t("statusBrokenSection", { count: data.broken_feeds.length })}
                 </h2>
                 <span className="text-xs text-slate-500">
-                  Cập nhật: {new Date(data.checked_at).toLocaleTimeString("vi-VN")}
+                  {t("statusUpdatedAt")}{" "}
+                  {new Date(data.checked_at).toLocaleTimeString(dateLocale)}
                 </span>
               </div>
 
               {data.broken_feeds.length === 0 ? (
                 <div className="p-6 text-sm text-slate-500 text-center">
-                  ✓ Tất cả các feed đều đang hoạt động ổn định.
+                  {t("statusAllHealthy")}
                 </div>
               ) : (
                 <div className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -234,10 +241,10 @@ export default function StatusDashboard() {
                     <div key={f.id} className="p-4 space-y-1 text-sm">
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-medium">
-                          [{f.folder || "Chung"}] {f.title}
+                          [{f.folder || "General"}] {f.title}
                         </span>
                         <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300">
-                          {f.error_count} lỗi
+                          {t("statusErrorBadge", { count: f.error_count })}
                         </span>
                       </div>
                       <div className="text-xs text-slate-500 truncate">{f.feed_url}</div>

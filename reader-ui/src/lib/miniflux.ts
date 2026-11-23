@@ -56,6 +56,7 @@ export interface MinifluxEntry {
   share_code: string;
   starred: boolean;
   reading_time: number;
+  tags?: string[];
   enclosures?: MinifluxEnclosure[] | null;
   feed: MinifluxFeed;
 }

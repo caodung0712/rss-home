@@ -153,7 +153,7 @@ export async function buildEntriesExportZip(
   const zip = new JSZip();
   const imagesFolder = zip.folder("images")!;
   const csvRows: string[] = [
-    "id,title,source,folder,url,published_at,starred,markdown_file,images_count",
+    "id,title,source,folder,tags,url,published_at,starred,markdown_file,images_count",
   ];
 
   // Giới hạn tải song song để không làm nghẽn mạng nhà
@@ -184,6 +184,7 @@ export async function buildEntriesExportZip(
     const mdBody = htmlToMarkdown(entry.content || "", rewriteMap);
     const sourceName = entry.feed?.title || "";
     const folderName = entry.feed?.category?.title || "";
+    const tagsList = Array.isArray(entry.tags) ? entry.tags : [];
     const mdFilename = `${slugifyFilename(entry.title, "bai-viet")}-${entry.id}.md`;
 
     const frontmatter = [
@@ -192,6 +193,7 @@ export async function buildEntriesExportZip(
       `title: ${escapeYaml(entry.title)}`,
       `source: ${escapeYaml(sourceName)}`,
       `folder: ${escapeYaml(folderName)}`,
+      `tags: ${escapeYaml(tagsList.join(", "))}`,
       `url: ${escapeYaml(entry.url)}`,
       `published_at: ${escapeYaml(entry.published_at)}`,
       `starred: ${entry.starred ? "true" : "false"}`,
@@ -209,6 +211,7 @@ export async function buildEntriesExportZip(
         escapeCsvCell(entry.title),
         escapeCsvCell(sourceName),
         escapeCsvCell(folderName),
+        escapeCsvCell(tagsList.join("; ")),
         escapeCsvCell(entry.url),
         escapeCsvCell(entry.published_at),
         escapeCsvCell(entry.starred ? "true" : "false"),

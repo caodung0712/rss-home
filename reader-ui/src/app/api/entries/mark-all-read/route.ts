@@ -3,8 +3,9 @@ import { isAuthenticated } from "@/lib/auth";
 import { minifluxFetch, type MinifluxEntriesResponse } from "@/lib/miniflux";
 
 interface MarkAllBody {
-  scope: "all" | "category" | "feed";
+  scope: "all" | "category" | "feed" | "tag";
   id?: number;
+  tag?: string;
   olderThanDays?: number;
 }
 
@@ -15,18 +16,21 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = (await req.json()) as MarkAllBody;
-    const { scope, id, olderThanDays } = body;
+    const { scope, id, tag, olderThanDays } = body;
 
-    if (olderThanDays && olderThanDays > 0) {
-      const beforeEpoch = Math.floor(Date.now() / 1000) - olderThanDays * 86400;
+    if ((olderThanDays && olderThanDays > 0) || (scope === "tag" && tag)) {
       const params = new URLSearchParams({
         status: "unread",
-        published_before: String(beforeEpoch),
         limit: "500",
         offset: "0",
       });
+      if (olderThanDays && olderThanDays > 0) {
+        const beforeEpoch = Math.floor(Date.now() / 1000) - olderThanDays * 86400;
+        params.set("published_before", String(beforeEpoch));
+      }
       if (scope === "category" && id) params.set("category_id", String(id));
       if (scope === "feed" && id) params.set("feed_id", String(id));
+      if (scope === "tag" && tag) params.set("tags", tag);
 
       let totalMarked = 0;
       // Lặp theo lô 500 bài để đánh dấu hết bài cũ hơn N ngày

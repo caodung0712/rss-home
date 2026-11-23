@@ -33,6 +33,7 @@ import {
   Video,
   Youtube,
 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 interface CategoryItem {
   id: number;
@@ -148,6 +149,8 @@ const TOPIC_PRESETS: TopicPreset[] = [
 ];
 
 export default function AddSourcePage() {
+  const { locale, t } = useI18n();
+  const L = (vi: string, en: string) => (locale === "en" ? en : vi);
   const [darkMode, setDarkMode] = useState(false);
   const [section, setSection] = useState<SourceSection>("website");
 
@@ -467,22 +470,22 @@ export default function AddSourcePage() {
     icon: React.ReactNode;
   }> = [
     { id: "website", label: "Website / RSS", icon: <Globe className="w-4 h-4" /> },
-    { id: "youtube", label: "Kênh YouTube", icon: <Youtube className="w-4 h-4 text-red-500" /> },
-    { id: "tiktok", label: "Kênh TikTok", icon: <Video className="w-4 h-4 text-pink-600" /> },
+    { id: "youtube", label: L("Kênh YouTube", "YouTube Channels"), icon: <Youtube className="w-4 h-4 text-red-500" /> },
+    { id: "tiktok", label: L("Kênh TikTok", "TikTok Channels"), icon: <Video className="w-4 h-4 text-pink-600" /> },
     { id: "linkedin", label: "LinkedIn", icon: <Briefcase className="w-4 h-4 text-blue-700" /> },
-    { id: "x", label: "Tài khoản X", icon: <Twitter className="w-4 h-4 text-sky-500" /> },
-    { id: "facebook", label: "Trang Facebook", icon: <Facebook className="w-4 h-4 text-blue-600" /> },
+    { id: "x", label: L("Tài khoản X", "X Accounts"), icon: <Twitter className="w-4 h-4 text-sky-500" /> },
+    { id: "facebook", label: L("Trang Facebook", "Facebook Pages"), icon: <Facebook className="w-4 h-4 text-blue-600" /> },
     { id: "google_news", label: "Google News / Alerts", icon: <Search className="w-4 h-4 text-emerald-600" /> },
     { id: "social_other", label: "Telegram / RSSHub", icon: <Send className="w-4 h-4 text-indigo-500" /> },
     { id: "import", label: "Import OPML / CSV", icon: <Upload className="w-4 h-4 text-amber-600" /> },
-    { id: "manage", label: `Đang theo dõi (${feeds.length})`, icon: <ListChecks className="w-4 h-4 text-slate-500" /> },
+    { id: "manage", label: L(`Đang theo dõi (${feeds.length})`, `Following (${feeds.length})`), icon: <ListChecks className="w-4 h-4 text-slate-500" /> },
   ];
 
   const folderPicker = (
     <div className="flex flex-wrap items-center gap-2 p-3 rounded-xl bg-slate-100/80 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-sm">
       <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
         <FolderPlus className="w-4 h-4 text-green-600" />
-        Lưu vào thư mục:
+        {L("Lưu vào thư mục:", "Save to folder:")}
       </span>
       <select
         value={selectedCategoryId}
@@ -494,14 +497,14 @@ export default function AddSourcePage() {
             {c.title}
           </option>
         ))}
-        <option value="new">+ Tạo thư mục mới...</option>
+        <option value="new">{L("+ Tạo thư mục mới...", "+ Create new folder...")}</option>
       </select>
       {selectedCategoryId === "new" && (
         <input
           type="text"
           value={newFolderName}
           onChange={(e) => setNewFolderName(e.target.value)}
-          placeholder="Tên thư mục mới (vd: Finance, Crypto)"
+          placeholder={L("Tên thư mục mới (vd: Finance, Crypto)", "New folder name (e.g. Finance, Crypto)")}
           className="flex-1 min-w-[200px] px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
         />
       )}
@@ -526,21 +529,21 @@ export default function AddSourcePage() {
         <div className="flex flex-col items-center gap-2">
           <Link
             href="/"
-            title="Newsfeed"
+            title={t("newsfeed")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Home className="w-4 h-4" />
           </Link>
           <Link
             href="/"
-            title="Đã lưu"
+            title={t("saved")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Bookmark className="w-4 h-4" />
           </Link>
           <Link
             href="/add"
-            title="Thêm nguồn mới"
+            title={t("addSource")}
             className="p-2 rounded-lg bg-green-600 text-white shadow-sm"
           >
             <Plus className="w-4 h-4" />
@@ -550,21 +553,21 @@ export default function AddSourcePage() {
         <div className="flex flex-col items-center gap-2">
           <Link
             href="/manage"
-            title="Quản lý nội dung (Content)"
+            title={t("manageContent")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Settings className="w-4 h-4" />
           </Link>
           <Link
             href="/status"
-            title="Trạng thái hệ thống"
+            title={t("systemStatus")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             <Activity className="w-4 h-4" />
           </Link>
           <button
             onClick={toggleTheme}
-            title="Chế độ sáng / tối"
+            title={t("darkMode")}
             className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
           >
             {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -572,15 +575,15 @@ export default function AddSourcePage() {
         </div>
       </aside>
 
-      {/* Cột danh mục Thêm mới (giống cột "Add new" của Inoreader) */}
+      {/* Cột danh mục Thêm mới */}
       <aside className="hidden md:flex flex-col w-60 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60">
         <div className="h-12 px-4 flex items-center justify-between border-b border-slate-200 dark:border-slate-800">
-          <span className="font-bold text-sm">Thêm mới</span>
+          <span className="font-bold text-sm">{L("Thêm mới", "Add new")}</span>
           <Link
             href="/"
             className="text-xs text-green-600 hover:underline font-medium"
           >
-            Về đọc tin
+            {t("backToReader")}
           </Link>
         </div>
 
@@ -610,12 +613,12 @@ export default function AddSourcePage() {
         {/* Mobile header + tabs */}
         <div className="md:hidden border-b border-slate-200 dark:border-slate-800 p-3 space-y-2">
           <div className="flex items-center justify-between">
-            <h1 className="font-bold text-base">Thêm nguồn mới</h1>
+            <h1 className="font-bold text-base">{t("addSource")}</h1>
             <Link
               href="/"
               className="px-3 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs font-medium"
             >
-              Về đọc tin
+              {t("backToReader")}
             </Link>
           </div>
           <div className="flex gap-1.5 overflow-x-auto pb-1">
@@ -665,7 +668,7 @@ export default function AddSourcePage() {
           {section === "website" && (
             <div className="space-y-8">
               <div className="space-y-4">
-                <h2 className="text-xl font-bold">Theo dõi Website hoặc RSS</h2>
+                <h2 className="text-xl font-bold">{L("Theo dõi Website hoặc RSS", "Follow Website or RSS")}</h2>
                 <form onSubmit={handleDiscoverWebsite} className="flex gap-2">
                   <div className="relative flex-1">
                     <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
@@ -673,7 +676,7 @@ export default function AddSourcePage() {
                       type="text"
                       value={websiteInput}
                       onChange={(e) => setWebsiteInput(e.target.value)}
-                      placeholder="Nhập địa chỉ trang web (vd: vnexpress.net, tinhte.vn) hoặc dán URL RSS..."
+                      placeholder={L("Nhập địa chỉ trang web (vd: vnexpress.net, tinhte.vn) hoặc dán URL RSS...", "Enter website URL (e.g. techcrunch.com) or paste RSS URL...")}
                       className="w-full pl-11 pr-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
                     />
                   </div>
@@ -683,7 +686,7 @@ export default function AddSourcePage() {
                     className="px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center gap-2 shrink-0"
                   >
                     {discovering && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Tìm feed
+                    {L("Tìm feed", "Find feed")}
                   </button>
                 </form>
 
@@ -694,14 +697,14 @@ export default function AddSourcePage() {
                     onChange={(e) => setWebsiteCrawler(e.target.checked)}
                     className="rounded border-slate-300"
                   />
-                  Tự lấy toàn văn bài viết (bật cho blog chỉ đăng đoạn tóm tắt trong RSS)
+                  {L("Tự lấy toàn văn bài viết (bật cho blog chỉ đăng đoạn tóm tắt trong RSS)", "Auto-fetch full article text (for summary-only RSS feeds)")}
                 </label>
 
                 {/* Kết quả dò RSS */}
                 {discovered.length > 0 && (
                   <div className="space-y-2.5 pt-2">
                     <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      Tìm thấy {discovered.length} nguồn RSS
+                      {L(`Tìm thấy ${discovered.length} nguồn RSS`, `Found ${discovered.length} RSS feed(s)`)}
                     </div>
                     {discovered.map((feed) => {
                       const already = existingFeedUrls.has(feed.url);
@@ -721,7 +724,7 @@ export default function AddSourcePage() {
                           {already ? (
                             <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 shrink-0">
                               <Check className="w-3.5 h-3.5 text-green-600" />
-                              Đã theo dõi
+                              {L("Đã theo dõi", "Following")}
                             </span>
                           ) : (
                             <button
@@ -737,7 +740,7 @@ export default function AddSourcePage() {
                               }
                               className="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold shrink-0"
                             >
-                              + Theo dõi
+                              {L("+ Theo dõi", "+ Follow")}
                             </button>
                           )}
                         </div>
@@ -749,7 +752,7 @@ export default function AddSourcePage() {
 
               {/* Khám phá theo chủ đề (giống Explore topics của Inoreader) */}
               <div className="space-y-4">
-                <h3 className="text-base font-bold">Khám phá nhanh theo chủ đề</h3>
+                <h3 className="text-base font-bold">{L("Khám phá nhanh theo chủ đề", "Quick Explore by Topic")}</h3>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
                   {TOPIC_PRESETS.map((topic) => {
                     const selected = activeTopic?.id === topic.id;
@@ -799,7 +802,7 @@ export default function AddSourcePage() {
                           {already ? (
                             <span className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-slate-200/70 dark:bg-slate-800 text-xs text-slate-500 shrink-0">
                               <Check className="w-3.5 h-3.5 text-green-600" />
-                              Đã theo dõi
+                              {L("Đã theo dõi", "Following")}
                             </span>
                           ) : (
                             <button
@@ -814,7 +817,7 @@ export default function AddSourcePage() {
                               }
                               className="px-3.5 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold shrink-0"
                             >
-                              + Theo dõi
+                              {L("+ Theo dõi", "+ Follow")}
                             </button>
                           )}
                         </div>
@@ -830,9 +833,12 @@ export default function AddSourcePage() {
           {section === "youtube" && (
             <div className="space-y-5">
               <div>
-                <h2 className="text-xl font-bold">Theo dõi kênh YouTube</h2>
+                <h2 className="text-xl font-bold">{L("Theo dõi kênh YouTube", "Follow YouTube Channel")}</h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  Dán link kênh (`https://www.youtube.com/@...`) hoặc chỉ gõ `@handle`, hệ thống tự lấy RSS chính chủ (miễn phí, không cần API key).
+                  {L(
+                    "Dán link kênh (`https://www.youtube.com/@...`) hoặc chỉ gõ `@handle`, hệ thống tự lấy RSS chính chủ (miễn phí, không cần API key).",
+                    "Paste a channel link (`https://www.youtube.com/@...`) or enter `@handle` to resolve its native RSS feed (free, no API key required)."
+                  )}
                 </p>
               </div>
 
@@ -842,7 +848,7 @@ export default function AddSourcePage() {
                     type="text"
                     value={ytInput}
                     onChange={(e) => setYtInput(e.target.value)}
-                    placeholder="Ví dụ: https://www.youtube.com/@mkbhd hoặc @Tinhte"
+                    placeholder={L("Ví dụ: https://www.youtube.com/@mkbhd hoặc @Tinhte", "e.g. https://www.youtube.com/@mkbhd or @veritasium")}
                     className="flex-1 px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
                   />
                   <button
@@ -851,7 +857,7 @@ export default function AddSourcePage() {
                     className="px-5 py-3 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-semibold inline-flex items-center gap-2"
                   >
                     {discovering && <Loader2 className="w-4 h-4 animate-spin" />}
-                    Tìm kênh
+                    {L("Tìm kênh", "Find channel")}
                   </button>
                 </div>
 
@@ -862,7 +868,7 @@ export default function AddSourcePage() {
                     onChange={(e) => setYtNoShorts(e.target.checked)}
                     className="rounded border-slate-300"
                   />
-                  Bỏ video Shorts (chỉ lấy video dài qua playlist UULF)
+                  {L("Bỏ video Shorts (chỉ lấy video dài qua playlist UULF)", "Exclude Shorts (long-form videos only via UULF playlist)")}
                 </label>
               </form>
 
@@ -884,7 +890,7 @@ export default function AddSourcePage() {
                     }
                     className="px-4 py-2 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold shrink-0"
                   >
-                    + Theo dõi kênh
+                    {L("+ Theo dõi kênh", "+ Follow channel")}
                   </button>
                 </div>
               )}
@@ -895,15 +901,21 @@ export default function AddSourcePage() {
           {section === "tiktok" && (
             <div className="space-y-5">
               <div>
-                <h2 className="text-xl font-bold">Theo dõi kênh TikTok (Miễn phí $0)</h2>
+                <h2 className="text-xl font-bold">{L("Theo dõi kênh TikTok (Miễn phí $0)", "Follow TikTok Channel (Free $0)")}</h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  Chạy hoàn toàn qua RSSHub nội bộ, không dùng Apify và không cần cookie. Lấy được video, ảnh bìa và caption.
+                  {L(
+                    "Chạy hoàn toàn qua RSSHub nội bộ, không dùng Apify và không cần cookie. Lấy được video, ảnh bìa và caption.",
+                    "Runs completely through self-hosted RSSHub without Apify or cookies. Fetches videos, thumbnails, and captions."
+                  )}
                 </p>
               </div>
 
               <div className="p-3 rounded-xl border bg-green-50 border-green-200 text-green-800 dark:bg-green-950/40 dark:border-green-900 dark:text-green-200 text-xs flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 shrink-0" />
-                Sẵn sàng dùng ngay qua RSSHub nội bộ (`http://rsshub:1200/tiktok/user/@handle`).
+                {L(
+                  "Sẵn sàng dùng ngay qua RSSHub nội bộ (`http://rsshub:1200/tiktok/user/@handle`).",
+                  "Ready to use via local RSSHub (`http://rsshub:1200/tiktok/user/@handle`)."
+                )}
               </div>
 
               <form
@@ -922,7 +934,7 @@ export default function AddSourcePage() {
                   type="text"
                   value={ttHandle}
                   onChange={(e) => setTtHandle(e.target.value)}
-                  placeholder="Nhập @handle hoặc link TikTok (vd: @tiktok hoặc https://www.tiktok.com/@tenkenh)"
+                  placeholder={L("Nhập @handle hoặc link TikTok (vd: @tiktok hoặc https://www.tiktok.com/@tenkenh)", "Enter @handle or TikTok URL (e.g. @tiktok)")}
                   required
                   className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"
                 />
@@ -930,7 +942,7 @@ export default function AddSourcePage() {
                   type="text"
                   value={ttTitle}
                   onChange={(e) => setTtTitle(e.target.value)}
-                  placeholder="Tên hiển thị tuỳ chọn (để trống sẽ tự lấy @handle)"
+                  placeholder={L("Tên hiển thị tuỳ chọn (để trống sẽ tự lấy @handle)", "Optional display name (defaults to @handle)")}
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
                 />
                 <button
@@ -938,7 +950,7 @@ export default function AddSourcePage() {
                   disabled={submitting}
                   className="px-5 py-2.5 rounded-xl bg-pink-600 hover:bg-pink-700 text-white text-sm font-semibold"
                 >
-                  + Theo dõi kênh TikTok
+                  {L("+ Theo dõi kênh TikTok", "+ Follow TikTok")}
                 </button>
               </form>
             </div>
@@ -948,9 +960,12 @@ export default function AddSourcePage() {
           {section === "linkedin" && (
             <div className="space-y-5">
               <div>
-                <h2 className="text-xl font-bold">Theo dõi LinkedIn (Miễn phí $0)</h2>
+                <h2 className="text-xl font-bold">{L("Theo dõi LinkedIn (Miễn phí $0)", "Follow LinkedIn (Free $0)")}</h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  Đọc trực tiếp bài đăng công khai trên trang cá nhân (`/in/...`) hoặc trang công ty (`/company/...`) hoàn toàn miễn phí — không dùng Apify, không cần đăng nhập cookie.
+                  {L(
+                    "Đọc trực tiếp bài đăng công khai trên trang cá nhân (`/in/...`) hoặc trang công ty (`/company/...`) hoàn toàn miễn phí — không dùng Apify, không cần đăng nhập cookie.",
+                    "Fetch public posts from profiles (`/in/...`) or company pages (`/company/...`) for free — no Apify, no cookies required."
+                  )}
                 </p>
               </div>
 
@@ -964,7 +979,7 @@ export default function AddSourcePage() {
                       : ""
                   }`}
                 >
-                  Trang cá nhân / Công ty
+                  {L("Trang cá nhân / Công ty", "Profile / Company")}
                 </button>
                 <button
                   type="button"
@@ -975,7 +990,7 @@ export default function AddSourcePage() {
                       : ""
                   }`}
                 >
-                  Tìm việc (LinkedIn Jobs)
+                  {L("Tìm việc (LinkedIn Jobs)", "Jobs (LinkedIn Jobs)")}
                 </button>
                 <button
                   type="button"
@@ -986,7 +1001,7 @@ export default function AddSourcePage() {
                       : ""
                   }`}
                 >
-                  Theo dõi qua Google News
+                  {L("Theo dõi qua Google News", "Via Google News")}
                 </button>
               </div>
 
@@ -1048,7 +1063,7 @@ export default function AddSourcePage() {
                   disabled={submitting}
                   className="px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold"
                 >
-                  + Theo dõi LinkedIn
+                  {L("+ Theo dõi LinkedIn", "+ Follow LinkedIn")}
                 </button>
               </form>
             </div>
@@ -1523,13 +1538,13 @@ export default function AddSourcePage() {
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-xl font-bold">
-                  Nguồn đang theo dõi ({feeds.length})
+                  {L(`Nguồn đang theo dõi (${feeds.length})`, `Following (${feeds.length})`)}
                 </h2>
                 <input
                   type="text"
                   value={manageQuery}
                   onChange={(e) => setManageQuery(e.target.value)}
-                  placeholder="Lọc theo tên, URL hoặc thư mục..."
+                  placeholder={L("Lọc theo tên, URL hoặc thư mục...", "Filter by name, URL or folder...")}
                   className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm w-64"
                 />
               </div>

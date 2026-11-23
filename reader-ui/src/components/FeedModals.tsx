@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { RefreshCw, X } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 export interface EditableFeed {
   id: number;
@@ -35,6 +36,7 @@ export function FeedPropertiesModal({
   onClose: () => void;
   onSaved: (msg: string) => void;
 }) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<"properties" | "filter">(initialTab);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -95,10 +97,10 @@ export function FeedPropertiesModal({
         }),
       });
       if (!res.ok) throw new Error("err");
-      onSaved("Đã lưu cấu hình feed.");
+      onSaved(t("modalSavedFeed"));
       onClose();
     } catch {
-      onSaved("Lỗi khi lưu cấu hình feed.");
+      onSaved(t("modalSaveFeedErr"));
     } finally {
       setSaving(false);
     }
@@ -108,7 +110,7 @@ export function FeedPropertiesModal({
     setRefreshing(true);
     try {
       await fetch(`/api/feeds/${feed.id}/refresh`, { method: "PUT" });
-      onSaved(`Đã gửi yêu cầu quét lại "${title}".`);
+      onSaved(t("modalRescanSent", { title }));
     } finally {
       setRefreshing(false);
     }
@@ -138,7 +140,7 @@ export function FeedPropertiesModal({
                     : ""
                 }`}
               >
-                Thuộc tính
+                {t("modalProperties")}
               </button>
               <button
                 type="button"
@@ -149,7 +151,7 @@ export function FeedPropertiesModal({
                     : ""
                 }`}
               >
-                Bộ lọc từ khoá
+                {t("modalFilter")}
               </button>
             </div>
           </div>
@@ -164,13 +166,13 @@ export function FeedPropertiesModal({
         <form onSubmit={handleSave} className="p-5 space-y-4 text-sm">
           {loading ? (
             <div className="py-8 text-center text-xs text-slate-400">
-              Đang tải thông tin...
+              {t("modalLoading")}
             </div>
           ) : tab === "properties" ? (
             <>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Tên hiển thị
+                  {t("modalDisplayName")}
                 </label>
                 <input
                   type="text"
@@ -183,7 +185,7 @@ export function FeedPropertiesModal({
 
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Thư mục
+                  {t("modalFolder")}
                 </label>
                 <select
                   value={categoryId}
@@ -200,7 +202,7 @@ export function FeedPropertiesModal({
 
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Feed URL
+                  {t("modalFeedUrl")}
                 </label>
                 <input
                   type="url"
@@ -213,7 +215,7 @@ export function FeedPropertiesModal({
 
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Trang gốc (Site URL)
+                  {t("modalSiteUrl")}
                 </label>
                 <input
                   type="text"
@@ -230,7 +232,7 @@ export function FeedPropertiesModal({
                     checked={crawler}
                     onChange={(e) => setCrawler(e.target.checked)}
                   />
-                  Tự lấy toàn văn (Crawler)
+                  {t("modalCrawler")}
                 </label>
                 <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
                   <input
@@ -238,43 +240,41 @@ export function FeedPropertiesModal({
                     checked={!disabled}
                     onChange={(e) => setDisabled(!e.target.checked)}
                   />
-                  Đang bật (Enabled)
+                  {t("modalEnabled")}
                 </label>
               </div>
 
               {errorCount > 0 && (
                 <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-xs text-red-700 dark:text-red-300">
-                  <strong>Lỗi ({errorCount} lần):</strong>{" "}
-                  {errorMsg || "Không rõ nguyên nhân"}
+                  <strong>{t("modalErrorsCount", { count: errorCount })}</strong>{" "}
+                  {errorMsg || t("modalUnknownErr")}
                 </div>
               )}
             </>
           ) : (
             <>
-              <p className="text-xs text-slate-500">
-                Dùng quy tắc lọc Regex hoặc từ khoá của Miniflux (mỗi mẫu hoặc ngăn cách bằng dấu `|`, không phân biệt hoa thường với `(?i)tu-khoa`).
-              </p>
+              <p className="text-xs text-slate-500">{t("modalFilterDesc")}</p>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Chỉ giữ bài chứa từ khoá (Keeplist rules)
+                  {t("modalKeeplist")}
                 </label>
                 <textarea
                   rows={3}
                   value={keeplist}
                   onChange={(e) => setKeeplist(e.target.value)}
-                  placeholder="Ví dụ: (?i)(bitcoin|ethereum|ai agent)"
+                  placeholder="(?i)(bitcoin|ethereum|ai agent)"
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
                 />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">
-                  Chặn bài chứa từ khoá (Blocklist rules)
+                  {t("modalBlocklist")}
                 </label>
                 <textarea
                   rows={3}
                   value={blocklist}
                   onChange={(e) => setBlocklist(e.target.value)}
-                  placeholder="Ví dụ: (?i)(quảng cáo|tài trợ|tin vắn)"
+                  placeholder="(?i)(sponsored|advertisement)"
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono"
                 />
               </div>
@@ -289,7 +289,7 @@ export function FeedPropertiesModal({
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs hover:bg-slate-100 dark:hover:bg-slate-800"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
-              Quét lại ngay
+              {t("modalRescanNow")}
             </button>
             <div className="flex items-center gap-2">
               <button
@@ -297,14 +297,14 @@ export function FeedPropertiesModal({
                 onClick={onClose}
                 className="px-3.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs"
               >
-                Huỷ
+                {t("cancel")}
               </button>
               <button
                 type="submit"
                 disabled={saving}
                 className="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold disabled:opacity-50"
               >
-                {saving ? "Đang lưu..." : "Lưu thay đổi"}
+                {saving ? t("saving") : t("saveChanges")}
               </button>
             </div>
           </div>
