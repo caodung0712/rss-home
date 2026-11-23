@@ -11,6 +11,8 @@ import { getStorageStats } from "@/lib/storage";
 
 function detectFeedType(feedUrl: string): string {
   const u = feedUrl.toLowerCase();
+  if (u.includes("/linkedin.xml") || u.includes("/linkedin/")) return "linkedin";
+  if (u.includes("/tiktok/")) return "tiktok";
   if (u.includes("apify-bridge")) return "facebook";
   if (u.includes("/twitter/") || u.includes("fxtwitter.com")) return "x";
   if (u.includes("youtube.com")) return "youtube";

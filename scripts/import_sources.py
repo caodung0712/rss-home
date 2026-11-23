@@ -76,6 +76,24 @@ def normalize_x_handle(url_or_handle: str) -> str:
     return val
 
 
+def normalize_tiktok_handle(url_or_handle: str) -> str:
+    val = url_or_handle.strip()
+    val = re.sub(r"^https?://(www\.)?tiktok\.com/@?", "", val, flags=re.IGNORECASE)
+    val = val.split("/")[0].split("?")[0].lstrip("@")
+    return val
+
+
+def normalize_linkedin_url(url_or_handle: str) -> str:
+    val = url_or_handle.strip()
+    if val.startswith("http://") or val.startswith("https://"):
+        parsed = urllib.parse.urlparse(val)
+        return f"https://www.linkedin.com{parsed.path.rstrip('/')}"
+    clean = val.strip("/")
+    if clean.startswith(("in/", "company/", "school/")):
+        return f"https://www.linkedin.com/{clean}"
+    return f"https://www.linkedin.com/in/{clean}"
+
+
 def build_facebook_feed_url(task_id: str, url_or_handle: str, name: str) -> str:
     match_key = name.strip() or url_or_handle.strip().rstrip("/").split("/")[-1]
     query = urllib.parse.urlencode({"match": match_key})
@@ -124,6 +142,12 @@ def import_social_csv(
                         feed_url = f"https://fxtwitter.com/{handle}/feed.xml"
                     else:
                         feed_url = f"http://rsshub:1200/twitter/user/{handle}"
+                elif platform == "tiktok":
+                    handle = normalize_tiktok_handle(target)
+                    feed_url = f"http://rsshub:1200/tiktok/user/@{handle}"
+                elif platform == "linkedin":
+                    li_url = normalize_linkedin_url(target)
+                    feed_url = f"http://apify-bridge:8000/linkedin.xml?{urllib.parse.urlencode({'url': li_url})}"
                 elif platform == "youtube":
                     feed_url = resolve_youtube_feed(target, no_shorts=no_shorts)
                 elif platform == "facebook":
@@ -178,7 +202,7 @@ def main() -> int:
     parser.add_argument(
         "--platform",
         action="append",
-        choices=["x", "youtube", "facebook"],
+        choices=["x", "youtube", "facebook", "tiktok", "linkedin"],
         help="Chỉ import nền tảng được chọn (có thể truyền nhiều lần)",
     )
     parser.add_argument("--no-shorts", action="store_true", help="YouTube dùng playlist UULF để bỏ Shorts")

@@ -17,6 +17,17 @@ from bridge_core import (
     filter_recent_runs,
     parse_usage_payload,
 )
+from linkedin_rss import (
+    LINKEDIN_HEADERS,
+    _linkedin_feed_cache,
+    _linkedin_post_cache,
+    build_linkedin_rss_xml,
+    extract_linkedin_articles_from_profile,
+    extract_linkedin_post_urls,
+    extract_linkedin_profile_title,
+    normalize_linkedin_url,
+    parse_linkedin_post_html,
+)
 
 APIFY_API_BASE = "https://api.apify.com/v2"
 
@@ -86,7 +97,64 @@ async def health() -> dict[str, str]:
 async def clear_cache() -> dict[str, Any]:
     cleared_datasets = _dataset_cache.clear()
     cleared_usage = _usage_cache.clear()
-    return {"ok": True, "cleared": cleared_datasets + cleared_usage}
+    cleared_li = _linkedin_feed_cache.clear() + _linkedin_post_cache.clear()
+    return {"ok": True, "cleared": cleared_datasets + cleared_usage + cleared_li}
+
+
+@app.get("/linkedin.xml")
+async def linkedin_rss(
+    url: str = Query(..., description="URL trang cá nhân (/in/...) hoặc công ty (/company/...) trên LinkedIn"),
+) -> Response:
+    try:
+        profile_url = normalize_linkedin_url(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    cached_xml = _linkedin_feed_cache.get(profile_url)
+    if cached_xml is not None:
+        return Response(content=cached_xml, media_type="application/rss+xml; charset=utf-8")
+
+    async with httpx.AsyncClient(
+        timeout=20.0, headers=LINKEDIN_HEADERS, follow_redirects=True
+    ) as client:
+        prof_resp = await client.get(profile_url)
+        if prof_resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LinkedIn trả mã HTTP {prof_resp.status_code} cho {profile_url}.",
+            )
+        prof_html = prof_resp.text
+        feed_title = extract_linkedin_profile_title(prof_html, profile_url)
+        post_urls = extract_linkedin_post_urls(prof_html, limit=12)
+
+        posts: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+
+        for p_url in post_urls:
+            cached_post = _linkedin_post_cache.get(p_url)
+            if cached_post is not None:
+                posts.append(cached_post)
+                seen_urls.add(p_url)
+                continue
+            try:
+                p_resp = await client.get(p_url)
+                if p_resp.status_code == 200:
+                    parsed_post = parse_linkedin_post_html(p_resp.text, p_url, feed_title)
+                    if parsed_post:
+                        _linkedin_post_cache.set(p_url, parsed_post)
+                        posts.append(parsed_post)
+                        seen_urls.add(p_url)
+            except httpx.HTTPError:
+                continue
+
+        for art in extract_linkedin_articles_from_profile(prof_html, feed_title):
+            if art["url"] not in seen_urls:
+                posts.append(art)
+                seen_urls.add(art["url"])
+
+    xml_text = build_linkedin_rss_xml(posts, profile_url=profile_url, feed_title=feed_title)
+    _linkedin_feed_cache.set(profile_url, xml_text)
+    return Response(content=xml_text, media_type="application/rss+xml; charset=utf-8")
 
 
 @app.get("/task/{task_id}.xml")

@@ -131,7 +131,15 @@ export function extractYouTubeEmbedId(entryUrl: string): string | null {
 
 export function extractThumbnail(entry: MinifluxEntry): string | null {
   const imgs = extractImageUrls(entry.content || "", entry.enclosures);
-  return imgs.length > 0 ? imgs[0] : null;
+  if (imgs.length > 0) return imgs[0];
+  if (entry.content) {
+    const $ = cheerio.load(entry.content);
+    const poster = ($("video").first().attr("poster") || "").trim();
+    if (poster && isValidMediaUrl(poster)) {
+      return poster;
+    }
+  }
+  return null;
 }
 
 export function extractExcerpt(html: string, maxLen = 220): string {
@@ -175,7 +183,7 @@ export function sanitizeArticleHtml(html: string, rewriteImagesToProxy = true): 
       ...sanitizeHtml.defaults.allowedAttributes,
       img: ["src", "alt", "title", "width", "height", "loading"],
       a: ["href", "name", "target", "rel"],
-      video: ["src", "controls", "poster", "width", "height"],
+      video: ["src", "controls", "loop", "playsinline", "preload", "poster", "width", "height", "class"],
       source: ["src", "type"],
     },
     transformTags: {
@@ -187,6 +195,23 @@ export function sanitizeArticleHtml(html: string, rewriteImagesToProxy = true): 
           rel: "noopener noreferrer",
         },
       }),
+      video: (tagName, attribs) => {
+        const rawPoster = attribs.poster || "";
+        const proxiedPoster =
+          rewriteImagesToProxy && isValidMediaUrl(rawPoster)
+            ? `/api/image-proxy?url=${encodeURIComponent(rawPoster)}`
+            : rawPoster;
+        return {
+          tagName,
+          attribs: {
+            ...attribs,
+            controls: "true",
+            playsinline: "true",
+            ...(proxiedPoster ? { poster: proxiedPoster } : {}),
+            class: "w-full max-h-[540px] rounded-xl bg-black my-3",
+          },
+        };
+      },
       img: (tagName, attribs) => {
         const rawSrc = attribs.src || "";
         const proxiedSrc =

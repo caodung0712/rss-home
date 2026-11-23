@@ -575,6 +575,8 @@ export default function ContentManager() {
                   <option value="all">Tất cả loại feed</option>
                   <option value="rss">Website / RSS</option>
                   <option value="youtube">YouTube</option>
+                  <option value="tiktok">TikTok</option>
+                  <option value="linkedin">LinkedIn</option>
                   <option value="x">X (Twitter)</option>
                   <option value="facebook">Facebook</option>
                   <option value="google">Google News / Alerts</option>

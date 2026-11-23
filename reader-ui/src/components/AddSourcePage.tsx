@@ -6,6 +6,7 @@ import {
   Activity,
   AlertCircle,
   Bookmark,
+  Briefcase,
   Check,
   CheckCircle2,
   Cpu,
@@ -29,6 +30,7 @@ import {
   TrendingUp,
   Twitter,
   Upload,
+  Video,
   Youtube,
 } from "lucide-react";
 
@@ -63,6 +65,8 @@ interface DiscoveredFeed {
 type SourceSection =
   | "website"
   | "youtube"
+  | "tiktok"
+  | "linkedin"
   | "x"
   | "facebook"
   | "google_news"
@@ -175,6 +179,15 @@ export default function AddSourcePage() {
   const [xHandle, setXHandle] = useState("");
   const [xTitle, setXTitle] = useState("");
   const [xUseFx, setXUseFx] = useState(false);
+
+  // TikTok
+  const [ttHandle, setTtHandle] = useState("");
+  const [ttTitle, setTtTitle] = useState("");
+
+  // LinkedIn
+  const [liMode, setLiMode] = useState<"profile" | "jobs" | "google">("profile");
+  const [liInput, setLiInput] = useState("");
+  const [liTitle, setLiTitle] = useState("");
 
   // Facebook
   const [fbUrl, setFbUrl] = useState("");
@@ -455,6 +468,8 @@ export default function AddSourcePage() {
   }> = [
     { id: "website", label: "Website / RSS", icon: <Globe className="w-4 h-4" /> },
     { id: "youtube", label: "Kênh YouTube", icon: <Youtube className="w-4 h-4 text-red-500" /> },
+    { id: "tiktok", label: "Kênh TikTok", icon: <Video className="w-4 h-4 text-pink-600" /> },
+    { id: "linkedin", label: "LinkedIn", icon: <Briefcase className="w-4 h-4 text-blue-700" /> },
     { id: "x", label: "Tài khoản X", icon: <Twitter className="w-4 h-4 text-sky-500" /> },
     { id: "facebook", label: "Trang Facebook", icon: <Facebook className="w-4 h-4 text-blue-600" /> },
     { id: "google_news", label: "Google News / Alerts", icon: <Search className="w-4 h-4 text-emerald-600" /> },
@@ -876,7 +891,170 @@ export default function AddSourcePage() {
             </div>
           )}
 
-          {/* 3. X (TWITTER) */}
+          {/* 3. TIKTOK (MIỄN PHÍ QUA RSSHUB) */}
+          {section === "tiktok" && (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-xl font-bold">Theo dõi kênh TikTok (Miễn phí $0)</h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  Chạy hoàn toàn qua RSSHub nội bộ, không dùng Apify và không cần cookie. Lấy được video, ảnh bìa và caption.
+                </p>
+              </div>
+
+              <div className="p-3 rounded-xl border bg-green-50 border-green-200 text-green-800 dark:bg-green-950/40 dark:border-green-900 dark:text-green-200 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                Sẵn sàng dùng ngay qua RSSHub nội bộ (`http://rsshub:1200/tiktok/user/@handle`).
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void subscribe({
+                    platform: "tiktok",
+                    feedUrl: ttHandle,
+                    title: ttTitle || undefined,
+                    ...getFolderPayload("TikTok"),
+                  });
+                }}
+                className="space-y-3"
+              >
+                <input
+                  type="text"
+                  value={ttHandle}
+                  onChange={(e) => setTtHandle(e.target.value)}
+                  placeholder="Nhập @handle hoặc link TikTok (vd: @tiktok hoặc https://www.tiktok.com/@tenkenh)"
+                  required
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-pink-500"
+                />
+                <input
+                  type="text"
+                  value={ttTitle}
+                  onChange={(e) => setTtTitle(e.target.value)}
+                  placeholder="Tên hiển thị tuỳ chọn (để trống sẽ tự lấy @handle)"
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                />
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="px-5 py-2.5 rounded-xl bg-pink-600 hover:bg-pink-700 text-white text-sm font-semibold"
+                >
+                  + Theo dõi kênh TikTok
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* 4. LINKEDIN (MIỄN PHÍ TỰ HOST, KHÔNG CẦN APIFY) */}
+          {section === "linkedin" && (
+            <div className="space-y-5">
+              <div>
+                <h2 className="text-xl font-bold">Theo dõi LinkedIn (Miễn phí $0)</h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  Đọc trực tiếp bài đăng công khai trên trang cá nhân (`/in/...`) hoặc trang công ty (`/company/...`) hoàn toàn miễn phí — không dùng Apify, không cần đăng nhập cookie.
+                </p>
+              </div>
+
+              <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-800 p-1 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setLiMode("profile")}
+                  className={`px-3 py-1.5 rounded-lg ${
+                    liMode === "profile"
+                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                      : ""
+                  }`}
+                >
+                  Trang cá nhân / Công ty
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLiMode("jobs")}
+                  className={`px-3 py-1.5 rounded-lg ${
+                    liMode === "jobs"
+                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                      : ""
+                  }`}
+                >
+                  Tìm việc (LinkedIn Jobs)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLiMode("google")}
+                  className={`px-3 py-1.5 rounded-lg ${
+                    liMode === "google"
+                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                      : ""
+                  }`}
+                >
+                  Theo dõi qua Google News
+                </button>
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (liMode === "profile") {
+                    void subscribe({
+                      platform: "linkedin",
+                      feedUrl: liInput,
+                      title: liTitle || undefined,
+                      ...getFolderPayload("LinkedIn"),
+                    });
+                  } else if (liMode === "jobs") {
+                    void subscribe({
+                      platform: "linkedin_jobs",
+                      feedUrl: liInput,
+                      title: liTitle || undefined,
+                      ...getFolderPayload("LinkedIn"),
+                    });
+                  } else {
+                    const q = encodeURIComponent(`site:linkedin.com/posts ${liInput.trim()}`);
+                    void subscribe({
+                      platform: "google_news",
+                      feedUrl: `https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`,
+                      title: liTitle || `LinkedIn: ${liInput.trim()}`,
+                      ...getFolderPayload("LinkedIn"),
+                    });
+                  }
+                }}
+                className="space-y-3"
+              >
+                <input
+                  type="text"
+                  value={liInput}
+                  onChange={(e) => setLiInput(e.target.value)}
+                  placeholder={
+                    liMode === "profile"
+                      ? "Dán URL LinkedIn (vd: https://www.linkedin.com/in/justinwelsh hoặc /company/openai)"
+                      : liMode === "jobs"
+                        ? "Nhập từ khoá việc làm (vd: AI Engineer, Product Manager)"
+                        : 'Nhập tên tác giả hoặc từ khoá (vd: "Justin Welsh")'
+                  }
+                  required
+                  className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+                <input
+                  type="text"
+                  value={liTitle}
+                  onChange={(e) => setLiTitle(e.target.value)}
+                  placeholder="Tên hiển thị tuỳ chọn"
+                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                />
+                <p className="text-xs text-slate-500">
+                  Mẹo: Nếu tài khoản LinkedIn nào bật ẩn bài với khách (không xem được khi chưa đăng nhập), bạn chuyển sang tab &ldquo;Theo dõi qua Google News&rdquo; ở trên để lấy bài vẫn miễn phí $0.
+                </p>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-sm font-semibold"
+                >
+                  + Theo dõi LinkedIn
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* 5. X (TWITTER) */}
           {section === "x" && (
             <div className="space-y-5">
               <div>

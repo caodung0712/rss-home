@@ -113,6 +113,24 @@ export async function POST(req: NextRequest) {
             .split("/")[0]
             .replace(/^@/, "");
           feedUrl = `http://rsshub:1200/twitter/user/${handle}`;
+        } else if (platform === "tiktok") {
+          const handle = target
+            .replace(/^https?:\/\/(www\.)?tiktok\.com\/@/i, "")
+            .replace(/^https?:\/\/(www\.)?tiktok\.com\//i, "")
+            .split("/")[0]
+            .split("?")[0]
+            .replace(/^@/, "");
+          feedUrl = `http://rsshub:1200/tiktok/user/@${handle}`;
+        } else if (platform === "linkedin") {
+          let liUrl = target;
+          if (!/^https?:\/\//i.test(liUrl)) {
+            const clean = liUrl.replace(/^\/+|\/+$/g, "");
+            liUrl =
+              clean.startsWith("in/") || clean.startsWith("company/")
+                ? `https://www.linkedin.com/${clean}`
+                : `https://www.linkedin.com/in/${clean}`;
+          }
+          feedUrl = `http://apify-bridge:8000/linkedin.xml?url=${encodeURIComponent(liUrl)}`;
         } else if (platform === "youtube") {
           const resolved = await resolveYouTubeFeed(target, noShorts);
           feedUrl = resolved.url;

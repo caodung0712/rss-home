@@ -8,6 +8,9 @@ interface SubscribeBody {
     | "youtube"
     | "x"
     | "facebook"
+    | "tiktok"
+    | "linkedin"
+    | "linkedin_jobs"
     | "google_news"
     | "telegram"
     | "bluesky"
@@ -29,6 +32,30 @@ function normalizeXHandle(raw: string): string {
     .split("/")[0]
     .split("?")[0]
     .replace(/^@/, "");
+}
+
+function normalizeTikTokHandle(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^https?:\/\/(www\.)?tiktok\.com\/@/i, "")
+    .replace(/^https?:\/\/(www\.)?tiktok\.com\//i, "")
+    .split("/")[0]
+    .split("?")[0]
+    .replace(/^@/, "");
+}
+
+function normalizeLinkedInUrl(raw: string): string {
+  const val = raw.trim();
+  if (!val) return "";
+  if (/^https?:\/\//i.test(val)) {
+    const u = new URL(val);
+    return `https://www.linkedin.com${u.pathname.replace(/\/+$/, "")}`;
+  }
+  const clean = val.replace(/^\/+|\/+$/g, "");
+  if (clean.startsWith("in/") || clean.startsWith("company/") || clean.startsWith("school/")) {
+    return `https://www.linkedin.com/${clean}`;
+  }
+  return `https://www.linkedin.com/in/${clean}`;
 }
 
 export async function POST(req: NextRequest) {
@@ -110,6 +137,39 @@ export async function POST(req: NextRequest) {
         ? `https://fxtwitter.com/${handle}/feed.xml`
         : `http://rsshub:1200/twitter/user/${handle}`;
       if (!customTitle) customTitle = `@${handle} (X)`;
+    } else if (body.platform === "tiktok") {
+      const handle = normalizeTikTokHandle(finalFeedUrl || body.pageUrl || "");
+      if (!handle) {
+        return NextResponse.json(
+          { error: "Vui lòng nhập @handle hoặc link kênh TikTok." },
+          { status: 400 }
+        );
+      }
+      finalFeedUrl = `http://rsshub:1200/tiktok/user/@${handle}`;
+      if (!customTitle) customTitle = `@${handle} (TikTok)`;
+    } else if (body.platform === "linkedin") {
+      const liUrl = normalizeLinkedInUrl(finalFeedUrl || body.pageUrl || "");
+      if (!liUrl) {
+        return NextResponse.json(
+          { error: "Vui lòng nhập URL hồ sơ (/in/...) hoặc trang công ty (/company/...) LinkedIn." },
+          { status: 400 }
+        );
+      }
+      finalFeedUrl = `http://apify-bridge:8000/linkedin.xml?url=${encodeURIComponent(liUrl)}`;
+      if (!customTitle) {
+        const slug = liUrl.split("/").filter(Boolean).pop() || "LinkedIn";
+        customTitle = `${slug} (LinkedIn)`;
+      }
+    } else if (body.platform === "linkedin_jobs") {
+      const kw = (finalFeedUrl || "").trim();
+      if (!kw) {
+        return NextResponse.json(
+          { error: "Vui lòng nhập từ khoá việc làm LinkedIn." },
+          { status: 400 }
+        );
+      }
+      finalFeedUrl = `http://rsshub:1200/linkedin/jobs/all/all/${encodeURIComponent(kw)}`;
+      if (!customTitle) customTitle = `LinkedIn Jobs: ${kw}`;
     } else if (body.platform === "telegram") {
       const ch = finalFeedUrl
         .replace(/^https?:\/\/t\.me\/(s\/)?/i, "")

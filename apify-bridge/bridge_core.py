@@ -48,44 +48,82 @@ def _first_str(item: dict[str, Any], keys: tuple[str, ...]) -> str:
     return ""
 
 
+def extract_post_datetime(item: dict[str, Any]) -> datetime | None:
+    posted_at = item.get("postedAt") if isinstance(item.get("postedAt"), dict) else {}
+    raw = (
+        item.get("time")
+        or item.get("timestamp")
+        or item.get("publishedAt")
+        or item.get("createTimeISO")
+        or item.get("createTime")
+        or item.get("postedDate")
+        or item.get("createdAt")
+        or item.get("date")
+        or posted_at.get("date")
+        or posted_at.get("timestamp")
+    )
+    return parse_iso_datetime(raw)
+
+
 def extract_page_name(item: dict[str, Any]) -> str:
     user = item.get("user") if isinstance(item.get("user"), dict) else {}
     author = item.get("author") if isinstance(item.get("author"), dict) else {}
+    author_meta = item.get("authorMeta") if isinstance(item.get("authorMeta"), dict) else {}
+    actor = item.get("actor") if isinstance(item.get("actor"), dict) else {}
     name = (
         _first_str(item, ("pageName", "authorName", "userName", "name", "pageTitle"))
+        or _first_str(author_meta, ("nickName", "name"))
         or _first_str(user, ("name", "username", "title"))
-        or _first_str(author, ("name", "title"))
+        or _first_str(author, ("name", "title", "uniqueId", "nickname"))
+        or _first_str(actor, ("name",))
     )
     if name:
         return name
-    fb_url = _first_str(item, ("facebookUrl", "pageUrl", "inputUrl"))
-    if fb_url:
-        slug = urllib.parse.urlparse(fb_url).path.strip("/").split("/")[0]
-        return slug or "Facebook"
-    return "Facebook"
+    src_url = _first_str(
+        item,
+        ("facebookUrl", "pageUrl", "profileUrl", "authorProfileUrl", "inputUrl"),
+    )
+    if src_url:
+        parts = [p for p in urllib.parse.urlparse(src_url).path.strip("/").split("/") if p]
+        if parts:
+            return parts[-1]
+    return "Social"
 
 
 def extract_page_url(item: dict[str, Any]) -> str:
     user = item.get("user") if isinstance(item.get("user"), dict) else {}
+    author = item.get("author") if isinstance(item.get("author"), dict) else {}
+    author_meta = item.get("authorMeta") if isinstance(item.get("authorMeta"), dict) else {}
     return (
-        _first_str(item, ("facebookUrl", "pageUrl", "inputUrl"))
+        _first_str(
+            item,
+            ("facebookUrl", "pageUrl", "profileUrl", "authorUrl", "authorProfileUrl", "inputUrl"),
+        )
         or _first_str(user, ("url", "profileUrl"))
+        or _first_str(author, ("profileUrl", "url", "linkedinUrl"))
+        or _first_str(author_meta, ("profileUrl",))
     )
 
 
 def extract_post_url(item: dict[str, Any]) -> str:
-    return _first_str(item, ("url", "postUrl", "link", "topLevelUrl", "permalink"))
+    return _first_str(
+        item,
+        ("url", "postUrl", "webVideoUrl", "linkedinUrl", "shareUrl", "link", "topLevelUrl", "permalink"),
+    )
 
 
 def extract_post_id(item: dict[str, Any]) -> str:
-    pid = _first_str(item, ("postId", "id", "post_id", "feedbackId"))
+    pid = _first_str(item, ("postId", "urn", "id", "post_id", "feedbackId"))
     if pid:
         return pid
     return extract_post_url(item)
 
 
 def extract_post_text(item: dict[str, Any]) -> str:
-    return _first_str(item, ("text", "message", "caption", "postText", "description"))
+    return _first_str(
+        item,
+        ("text", "commentary", "message", "caption", "postText", "content", "desc", "description"),
+    )
 
 
 def _collect_avatar_urls(item: dict[str, Any]) -> set[str]:
@@ -94,7 +132,7 @@ def _collect_avatar_urls(item: dict[str, Any]) -> set[str]:
         val = item.get(key)
         if isinstance(val, str) and val.strip():
             avatars.add(val.strip())
-    for nested_key in ("user", "author", "page"):
+    for nested_key in ("user", "author", "page", "authorMeta", "actor"):
         nested = item.get(nested_key)
         if isinstance(nested, dict):
             for k in ("profilePic", "profilePicture", "avatar", "avatarUrl", "image"):
@@ -141,7 +179,7 @@ def extract_images(item: dict[str, Any], limit: int = MAX_IMAGES_PER_POST) -> li
     avatars = _collect_avatar_urls(item)
     candidates: list[str] = []
 
-    for key in ("images", "imageUrls", "photos", "media", "attachments"):
+    for key in ("images", "imageUrls", "postImages", "photos", "media", "mediaUrls", "covers", "attachments"):
         val = item.get(key)
         if isinstance(val, list):
             for entry in val:
@@ -149,11 +187,15 @@ def extract_images(item: dict[str, Any], limit: int = MAX_IMAGES_PER_POST) -> li
         elif isinstance(val, dict):
             candidates.extend(_extract_url_from_media_obj(val))
 
-    for key in ("image", "imageUrl", "photoUrl", "thumbnail", "thumbnailUrl"):
+    for key in ("image", "imageUrl", "photoUrl", "thumbnail", "thumbnailUrl", "videoMeta", "article", "document"):
         val = item.get(key)
         if isinstance(val, str) and val.startswith("http"):
             candidates.append(val.strip())
         elif isinstance(val, dict):
+            for subk in ("coverUrl", "originalCoverUrl", "coverImage", "thumbnail"):
+                subv = val.get(subk)
+                if isinstance(subv, str) and subv.startswith("http"):
+                    candidates.append(subv.strip())
             candidates.extend(_extract_url_from_media_obj(val))
 
     # Gỡ trùng lặp, bỏ avatar, giữ đúng thứ tự và giới hạn tối đa 20 ảnh
@@ -170,9 +212,14 @@ def extract_images(item: dict[str, Any], limit: int = MAX_IMAGES_PER_POST) -> li
 
 
 def extract_video_url(item: dict[str, Any]) -> str:
-    val = _first_str(item, ("videoUrl", "video", "playableUrl"))
+    val = _first_str(item, ("videoUrl", "playUrl", "video", "playableUrl"))
     if val:
         return val
+    video_meta = item.get("videoMeta")
+    if isinstance(video_meta, dict):
+        v = _first_str(video_meta, ("downloadAddr", "playAddr", "url"))
+        if v:
+            return v
     media = item.get("media")
     if isinstance(media, list):
         for entry in media:
@@ -217,9 +264,7 @@ def deduplicate_and_filter_items(
         deduped.append(item)
 
     deduped.sort(
-        key=lambda x: parse_iso_datetime(
-            x.get("time") or x.get("timestamp") or x.get("publishedAt") or x.get("date")
-        )
+        key=lambda x: extract_post_datetime(x)
         or datetime.fromtimestamp(0, tz=timezone.utc),
         reverse=True,
     )
@@ -292,10 +337,10 @@ def build_rss_xml(
     rss = ET.Element("rss", {"version": "2.0"})
     channel = ET.SubElement(rss, "channel")
 
-    feed_title = f"Facebook - {match.strip()}" if match and match.strip() else f"Facebook Apify Task {task_id}"
+    feed_title = f"Social - {match.strip()}" if match and match.strip() else f"Apify Task {task_id}"
     ET.SubElement(channel, "title").text = feed_title
-    ET.SubElement(channel, "link").text = f"https://www.facebook.com/"
-    ET.SubElement(channel, "description").text = f"Nguồn Facebook qua Apify bridge (task {task_id})"
+    ET.SubElement(channel, "link").text = "https://apify.com/"
+    ET.SubElement(channel, "description").text = f"Nguồn mạng xã hội qua Apify bridge (task {task_id})"
     ET.SubElement(channel, "lastBuildDate").text = format_datetime(datetime.now(timezone.utc))
 
     for item in items:
@@ -305,9 +350,7 @@ def build_rss_xml(
         video_url = extract_video_url(item)
         post_url = extract_post_url(item)
         post_id = extract_post_id(item) or post_url or str(hash(text))
-        pub_dt = parse_iso_datetime(
-            item.get("time") or item.get("timestamp") or item.get("publishedAt") or item.get("date")
-        )
+        pub_dt = extract_post_datetime(item)
 
         entry = ET.SubElement(channel, "item")
         ET.SubElement(entry, "title").text = build_post_title(

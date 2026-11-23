@@ -19,6 +19,12 @@ from bridge_core import (
     filter_recent_runs,
     parse_usage_payload,
 )
+from linkedin_rss import (
+    build_linkedin_rss_xml,
+    extract_linkedin_post_urls,
+    normalize_linkedin_url,
+    parse_linkedin_post_html,
+)
 
 
 class ApifyBridgeCoreTests(unittest.TestCase):
@@ -167,6 +173,100 @@ class ApifyBridgeCoreTests(unittest.TestCase):
         cache = TTLCache(ttl_seconds=60)
         cache.set("k", [1, 2, 3])
         self.assertEqual(cache.get("k"), [1, 2, 3])
+        self.assertEqual(cache.clear(), 1)
+        self.assertIsNone(cache.get("k"))
+
+    def test_linkedin_and_tiktok_items(self) -> None:
+        items = [
+            {
+                "urn": "urn:li:activity:7100001",
+                "author": {
+                    "name": "Justin Welsh",
+                    "profileUrl": "https://www.linkedin.com/in/justinwelsh",
+                    "avatar": "https://media.licdn.com/avatar.jpg",
+                },
+                "commentary": "Build a one-person business with distribution.",
+                "postUrl": "https://www.linkedin.com/feed/update/urn:li:activity:7100001",
+                "postedAt": {"date": "2026-11-22T12:00:00Z"},
+                "postImages": [{"url": "https://media.licdn.com/slide1.jpg"}],
+            },
+            {
+                "id": "7710348513128828191",
+                "authorMeta": {
+                    "name": "tiktok",
+                    "nickName": "TikTok Official",
+                    "avatar": "https://p16.tiktokcdn.com/avatar.jpg",
+                },
+                "text": "Short video caption #creator",
+                "webVideoUrl": "https://www.tiktok.com/@tiktok/video/7710348513128828191",
+                "createTimeISO": "2026-11-22T14:00:00Z",
+                "videoMeta": {
+                    "coverUrl": "https://p16.tiktokcdn.com/cover.jpg",
+                    "downloadAddr": "https://v16.tiktokcdn.com/video.mp4",
+                },
+            },
+        ]
+
+        li = deduplicate_and_filter_items(items, match="justinwelsh")
+        self.assertEqual(len(li), 1)
+        li_xml = build_rss_xml(li, task_id="li_task", match="Justin Welsh")
+        li_root = ET.fromstring(li_xml)
+        li_item = li_root.find("./channel/item")
+        self.assertIsNotNone(li_item)
+        self.assertIn("Justin Welsh:", li_item.findtext("title") or "")
+        self.assertIn("slide1.jpg", li_item.findtext("description") or "")
+        self.assertNotIn("avatar.jpg", li_item.findtext("description") or "")
+
+        tt = deduplicate_and_filter_items(items, match="TikTok Official")
+        self.assertEqual(len(tt), 1)
+        tt_xml = build_rss_xml(tt, task_id="tt_task", match="tiktok")
+        tt_root = ET.fromstring(tt_xml)
+        tt_item = tt_root.find("./channel/item")
+        self.assertIsNotNone(tt_item)
+        self.assertIn("TikTok Official:", tt_item.findtext("title") or "")
+        self.assertIn("cover.jpg", tt_item.findtext("description") or "")
+        self.assertIn("Xem video", tt_item.findtext("description") or "")
+
+    def test_free_linkedin_rss_parser(self) -> None:
+        self.assertEqual(
+            normalize_linkedin_url("justinwelsh"),
+            "https://www.linkedin.com/in/justinwelsh",
+        )
+        self.assertEqual(
+            normalize_linkedin_url("https://www.linkedin.com/company/openai/"),
+            "https://www.linkedin.com/company/openai",
+        )
+        sample_profile = """
+        <html><head><title>Justin Welsh | LinkedIn</title></head>
+        <body>
+          <a href="https://www.linkedin.com/posts/justinwelsh_test-activity-123">Post</a>
+        </body></html>
+        """
+        urls = extract_linkedin_post_urls(sample_profile)
+        self.assertEqual(urls, ["https://www.linkedin.com/posts/justinwelsh_test-activity-123"])
+
+        sample_post_html = """
+        <html><head>
+        <script type="application/ld+json">
+        {"@context":"http://schema.org","@type":"SocialMediaPosting",
+         "@id":"https://www.linkedin.com/posts/justinwelsh_test-activity-123",
+         "datePublished":"2026-11-22T12:48:23.087Z",
+         "headline":"Build distribution first.",
+         "articleBody":"Line 1\\nLine 2",
+         "author":{"@type":"Person","name":"Justin Welsh"},
+         "image":{"@type":"ImageObject","url":"https://media.licdn.com/dms/image/test.jpg"}}
+        </script>
+        </head><body></body></html>
+        """
+        parsed = parse_linkedin_post_html(sample_post_html, urls[0], "Justin Welsh")
+        self.assertIsNotNone(parsed)
+        xml_str = build_linkedin_rss_xml([parsed], "https://www.linkedin.com/in/justinwelsh", "Justin Welsh")
+        root = ET.fromstring(xml_str)
+        item = root.find("./channel/item")
+        self.assertIsNotNone(item)
+        self.assertIn("Justin Welsh: Line 1 Line 2", item.findtext("title") or "")
+        self.assertIn("test.jpg", item.findtext("description") or "")
+        self.assertIn("Xem bài gốc trên LinkedIn", item.findtext("description") or "")
 
 
 if __name__ == "__main__":
