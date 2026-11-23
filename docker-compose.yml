@@ -88,3 +88,24 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  reader-ui:
+    build:
+      context: ./reader-ui
+    container_name: rss-reader-ui
+    restart: unless-stopped
+    depends_on:
+      miniflux:
+        condition: service_healthy
+    ports:
+      - "${READER_UI_PORT:-3000}:3000"
+    environment:
+      MINIFLUX_INTERNAL_URL: http://miniflux:8080
+      MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
+      MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
+      MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD}
+      APIFY_BRIDGE_URL: http://apify-bridge:8000
+      READER_UI_PASSWORD: ${READER_UI_PASSWORD:-}
+      BACKUP_MOUNT_DIR: /backups
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups:ro
