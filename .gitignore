@@ -1,0 +1,22 @@
+# Bí mật & cấu hình cục bộ
+.env
+
+# Dữ liệu runtime & bản xuất
+data/
+exports/
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Hệ điều hành
+.DS_Store
