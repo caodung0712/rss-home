@@ -28,6 +28,7 @@ import {
   LogOut,
   Menu,
   Moon,
+  Plus,
   RefreshCw,
   Rss,
   Search,
@@ -738,6 +739,13 @@ export default function ReaderApp({
           Feeds
         </span>
         <div className="flex items-center gap-1">
+          <Link
+            href="/add"
+            title="Thêm nguồn mới"
+            className="p-1.5 rounded-md hover:bg-slate-200/70 dark:hover:bg-slate-800 text-green-600"
+          >
+            <Plus className="w-4 h-4" />
+          </Link>
           <button
             onClick={() => void handleRefreshFeeds()}
             title="Làm mới feeds"
@@ -923,6 +931,13 @@ export default function ReaderApp({
           >
             <Search className="w-4 h-4" />
           </button>
+          <Link
+            href="/add"
+            title="Thêm nguồn mới"
+            className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+          >
+            <Plus className="w-4 h-4" />
+          </Link>
         </div>
 
         <div className="flex flex-col items-center gap-2">
@@ -1114,7 +1129,14 @@ export default function ReaderApp({
               <RefreshCw className={`w-4 h-4 ${refreshingFeeds ? "animate-spin" : ""}`} />
             </button>
 
-            {/* Mobile status & theme */}
+            {/* Mobile add, status & theme */}
+            <Link
+              href="/add"
+              className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-green-600"
+              title="Thêm nguồn mới"
+            >
+              <Plus className="w-4 h-4" />
+            </Link>
             <Link
               href="/status"
               className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800"
