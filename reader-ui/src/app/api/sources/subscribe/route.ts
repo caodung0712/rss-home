@@ -155,7 +155,8 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      finalFeedUrl = `http://apify-bridge:8000/linkedin.xml?url=${encodeURIComponent(liUrl)}`;
+      const nameParam = customTitle ? `&name=${encodeURIComponent(customTitle)}` : "";
+      finalFeedUrl = `http://apify-bridge:8000/linkedin.xml?url=${encodeURIComponent(liUrl)}${nameParam}`;
       if (!customTitle) {
         const slug = liUrl.split("/").filter(Boolean).pop() || "LinkedIn";
         customTitle = `${slug} (LinkedIn)`;

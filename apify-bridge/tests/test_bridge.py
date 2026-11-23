@@ -22,7 +22,9 @@ from bridge_core import (
 from linkedin_rss import (
     build_linkedin_rss_xml,
     extract_linkedin_post_urls,
+    extract_name_from_google_rss,
     normalize_linkedin_url,
+    parse_google_news_rss_items,
     parse_linkedin_post_html,
 )
 
@@ -267,6 +269,19 @@ class ApifyBridgeCoreTests(unittest.TestCase):
         self.assertIn("Justin Welsh: Line 1 Line 2", item.findtext("title") or "")
         self.assertIn("test.jpg", item.findtext("description") or "")
         self.assertIn("Xem bài gốc trên LinkedIn", item.findtext("description") or "")
+
+    def test_google_news_linkedin_fallback(self) -> None:
+        g1 = "<rss><channel><item><title>Monika Grycz 💌 - LinkedIn</title></item></channel></rss>"
+        self.assertEqual(extract_name_from_google_rss(g1), "Monika Grycz")
+
+        g2 = """<rss><channel><item>
+        <title>To anyone still running GTM like it's 2019 - LinkedIn</title>
+        <link>https://news.google.com/rss/articles/abc</link>
+        <pubDate>Wed, 11 Nov 2026 14:54:52 GMT</pubDate>
+        </item></channel></rss>"""
+        items = parse_google_news_rss_items(g2, "Monika Grycz")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["headline"], "To anyone still running GTM like it's 2019")
 
 
 if __name__ == "__main__":

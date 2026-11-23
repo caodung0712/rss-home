@@ -25,7 +25,10 @@ from linkedin_rss import (
     extract_linkedin_articles_from_profile,
     extract_linkedin_post_urls,
     extract_linkedin_profile_title,
+    extract_linkedin_slug,
+    extract_name_from_google_rss,
     normalize_linkedin_url,
+    parse_google_news_rss_items,
     parse_linkedin_post_html,
 )
 
@@ -104,56 +107,100 @@ async def clear_cache() -> dict[str, Any]:
 @app.get("/linkedin.xml")
 async def linkedin_rss(
     url: str = Query(..., description="URL trang cá nhân (/in/...) hoặc công ty (/company/...) trên LinkedIn"),
+    name: str | None = Query(default=None, description="Tên hiển thị để dự phòng khi LinkedIn chặn guest"),
 ) -> Response:
+    import urllib.parse
+
     try:
         profile_url = normalize_linkedin_url(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    cached_xml = _linkedin_feed_cache.get(profile_url)
+    cache_key = f"{profile_url}::{name or ''}"
+    cached_xml = _linkedin_feed_cache.get(cache_key)
     if cached_xml is not None:
         return Response(content=cached_xml, media_type="application/rss+xml; charset=utf-8")
+
+    slug = extract_linkedin_slug(profile_url)
+    feed_title = (name or "").strip() or slug or "LinkedIn"
+    posts: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
 
     async with httpx.AsyncClient(
         timeout=20.0, headers=LINKEDIN_HEADERS, follow_redirects=True
     ) as client:
-        prof_resp = await client.get(profile_url)
-        if prof_resp.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=f"LinkedIn trả mã HTTP {prof_resp.status_code} cho {profile_url}.",
-            )
-        prof_html = prof_resp.text
-        feed_title = extract_linkedin_profile_title(prof_html, profile_url)
-        post_urls = extract_linkedin_post_urls(prof_html, limit=12)
+        try:
+            prof_resp = await client.get(profile_url)
+            if prof_resp.status_code == 200:
+                prof_html = prof_resp.text
+                feed_title = extract_linkedin_profile_title(prof_html, profile_url)
+                post_urls = extract_linkedin_post_urls(prof_html, limit=12)
 
-        posts: list[dict[str, Any]] = []
-        seen_urls: set[str] = set()
-
-        for p_url in post_urls:
-            cached_post = _linkedin_post_cache.get(p_url)
-            if cached_post is not None:
-                posts.append(cached_post)
-                seen_urls.add(p_url)
-                continue
-            try:
-                p_resp = await client.get(p_url)
-                if p_resp.status_code == 200:
-                    parsed_post = parse_linkedin_post_html(p_resp.text, p_url, feed_title)
-                    if parsed_post:
-                        _linkedin_post_cache.set(p_url, parsed_post)
-                        posts.append(parsed_post)
+                for p_url in post_urls:
+                    cached_post = _linkedin_post_cache.get(p_url)
+                    if cached_post is not None:
+                        posts.append(cached_post)
                         seen_urls.add(p_url)
-            except httpx.HTTPError:
-                continue
+                        continue
+                    try:
+                        p_resp = await client.get(p_url)
+                        if p_resp.status_code == 200:
+                            parsed_post = parse_linkedin_post_html(p_resp.text, p_url, feed_title)
+                            if parsed_post:
+                                _linkedin_post_cache.set(p_url, parsed_post)
+                                posts.append(parsed_post)
+                                seen_urls.add(p_url)
+                    except httpx.HTTPError:
+                        continue
 
-        for art in extract_linkedin_articles_from_profile(prof_html, feed_title):
-            if art["url"] not in seen_urls:
-                posts.append(art)
-                seen_urls.add(art["url"])
+                for art in extract_linkedin_articles_from_profile(prof_html, feed_title):
+                    if art["url"] not in seen_urls:
+                        posts.append(art)
+                        seen_urls.add(art["url"])
+        except httpx.HTTPError:
+            pass
+
+        # Dự phòng miễn phí qua Google News RSS nếu LinkedIn trả 999/chặn guest hoặc không có bài trực tiếp
+        if not posts:
+            resolved_name = (name or "").strip()
+            if not resolved_name and slug:
+                q1 = urllib.parse.urlencode(
+                    {"q": f'site:linkedin.com "{slug}"', "hl": "en-US", "gl": "US", "ceid": "US:en"}
+                )
+                try:
+                    g1 = await client.get(f"https://news.google.com/rss/search?{q1}")
+                    if g1.status_code == 200:
+                        resolved_name = extract_name_from_google_rss(g1.text) or ""
+                except httpx.HTTPError:
+                    pass
+
+            if not resolved_name and slug:
+                resolved_name = slug.replace("-", " ").strip()
+
+            if resolved_name:
+                feed_title = resolved_name
+                is_company = "/company/" in profile_url
+                queries = (
+                    [f'site:linkedin.com/posts "{resolved_name}"', f'site:linkedin.com "{resolved_name}"']
+                    if not is_company
+                    else [f'site:linkedin.com/company/{slug}', f'site:linkedin.com/posts "{resolved_name}"']
+                )
+                for q_str in queries:
+                    q2 = urllib.parse.urlencode(
+                        {"q": q_str, "hl": "en-US", "gl": "US", "ceid": "US:en"}
+                    )
+                    try:
+                        g2 = await client.get(f"https://news.google.com/rss/search?{q2}")
+                        if g2.status_code == 200:
+                            parsed_items = parse_google_news_rss_items(g2.text, resolved_name)
+                            if parsed_items:
+                                posts.extend(parsed_items[:30])
+                                break
+                    except httpx.HTTPError:
+                        continue
 
     xml_text = build_linkedin_rss_xml(posts, profile_url=profile_url, feed_title=feed_title)
-    _linkedin_feed_cache.set(profile_url, xml_text)
+    _linkedin_feed_cache.set(cache_key, xml_text)
     return Response(content=xml_text, media_type="application/rss+xml; charset=utf-8")
 
 

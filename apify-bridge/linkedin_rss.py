@@ -223,6 +223,63 @@ def build_linkedin_rss_xml(posts: list[dict[str, Any]], profile_url: str, feed_t
     return ET.tostring(rss, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
 
+def extract_linkedin_slug(profile_url: str) -> str:
+    parts = [p for p in urllib.parse.urlparse(profile_url).path.strip("/").split("/") if p]
+    return parts[-1] if parts else ""
+
+
+def extract_name_from_google_rss(xml_text: str) -> str | None:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    for item in root.findall("./channel/item"):
+        title = (item.findtext("title") or "").strip()
+        if not title:
+            continue
+        cleaned = re.sub(r"\s*[-|]\s*LinkedIn.*$", "", title, flags=re.I)
+        cleaned = re.sub(r"[^\w\s.\-]", "", cleaned, flags=re.UNICODE).strip()
+        if cleaned:
+            return cleaned
+    return None
+
+
+def parse_google_news_rss_items(xml_text: str, author_name: str) -> list[dict[str, Any]]:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    posts: list[dict[str, Any]] = []
+    for item in root.findall("./channel/item"):
+        raw_title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub_raw = (item.findtext("pubDate") or "").strip()
+        desc = (item.findtext("description") or "").strip()
+        if not link:
+            continue
+        clean_title = re.sub(r"\s*[-|]\s*LinkedIn\s*$", "", raw_title, flags=re.I).strip()
+        pub_dt: datetime | None = None
+        if pub_raw:
+            try:
+                from email.utils import parsedate_to_datetime
+                pub_dt = parsedate_to_datetime(pub_raw).astimezone(timezone.utc)
+            except Exception:
+                pub_dt = None
+        posts.append(
+            {
+                "id": link,
+                "url": link,
+                "author": author_name,
+                "headline": clean_title,
+                "text": clean_title or desc,
+                "published_at": pub_dt,
+                "images": [],
+                "video_url": "",
+            }
+        )
+    return posts
+
+
 # Cache 24 giờ cho từng bài viết đơn lẻ đã fetch để không tải lặp lại nhiều lần
 _linkedin_post_cache = TTLCache(ttl_seconds=86400)
 # Cache 15 phút cho toàn bộ RSS feed của một trang hồ sơ
