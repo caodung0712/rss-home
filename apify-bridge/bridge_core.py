@@ -383,3 +383,8 @@ class TTLCache:
 
     def set(self, key: str, value: Any) -> None:
         self._store[key] = (time.monotonic() + self.ttl_seconds, value)
+
+    def clear(self) -> int:
+        count = len(self._store)
+        self._store.clear()
+        return count

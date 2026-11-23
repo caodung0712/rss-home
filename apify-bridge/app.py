@@ -82,6 +82,13 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/cache/clear")
+async def clear_cache() -> dict[str, Any]:
+    cleared_datasets = _dataset_cache.clear()
+    cleared_usage = _usage_cache.clear()
+    return {"ok": True, "cleared": cleared_datasets + cleared_usage}
+
+
 @app.get("/task/{task_id}.xml")
 async def task_rss(
     task_id: str,

@@ -7,6 +7,7 @@ import {
   type MinifluxEntriesResponse,
   type MinifluxFeed,
 } from "@/lib/miniflux";
+import { getStorageStats } from "@/lib/storage";
 
 function detectFeedType(feedUrl: string): string {
   const u = feedUrl.toLowerCase();
@@ -24,13 +25,14 @@ export async function GET() {
   }
 
   try {
-    const [categories, feeds, counters, recentEntries] = await Promise.all([
+    const [categories, feeds, counters, recentEntries, storage] = await Promise.all([
       minifluxFetch<MinifluxCategory[]>("/v1/categories?counts=true"),
       minifluxFetch<MinifluxFeed[]>("/v1/feeds"),
       minifluxFetch<MinifluxCountersResponse>("/v1/feeds/counters"),
       minifluxFetch<MinifluxEntriesResponse>(
         "/v1/entries?order=published_at&direction=desc&limit=500"
       ).catch(() => ({ total: 0, entries: [] })),
+      getStorageStats(),
     ]);
 
     const lastPostMap = new Map<number, string>();
@@ -45,11 +47,15 @@ export async function GET() {
       const unreads = counters.unreads?.[String(f.id)] || 0;
       const total = reads + unreads;
       const engagement = total > 0 ? Math.round((reads / total) * 100) : 0;
+      const feedStorage = storage.by_feed[f.id];
       return {
         ...f,
         feed_type: detectFeedType(f.feed_url),
         read_count: reads,
         unread_count: unreads,
+        starred_count: feedStorage?.starred_entries || 0,
+        stored_entries: feedStorage?.total_entries ?? total,
+        storage_bytes: feedStorage?.storage_bytes || 0,
         engagement_pct: engagement,
         last_post_at: lastPostMap.get(f.id) || null,
         is_filtered: Boolean(
@@ -61,6 +67,14 @@ export async function GET() {
     return NextResponse.json({
       categories,
       feeds: enrichedFeeds,
+      storage_summary: {
+        db_bytes: storage.db_bytes,
+        total_active_entries: storage.total_active_entries,
+        total_removed_entries: storage.total_removed_entries,
+        redis_bytes: storage.redis_bytes,
+        redis_keys: storage.redis_keys,
+        auto_cleanup_days: 180,
+      },
     });
   } catch (err) {
     return NextResponse.json(

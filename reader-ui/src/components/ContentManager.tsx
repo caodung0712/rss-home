@@ -4,12 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
+  ArrowUpDown,
   Bookmark,
+  Database,
   Edit2,
+  Eraser,
   FileText,
   Filter,
   Folder,
   FolderPlus,
+  HardDrive,
   Home,
   Moon,
   Plus,
@@ -20,6 +24,7 @@ import {
   Settings,
   Sun,
   Trash2,
+  X,
 } from "lucide-react";
 import {
   FeedPropertiesModal,
@@ -32,9 +37,31 @@ interface ContentFeed extends EditableFeed {
   feed_type: string;
   read_count: number;
   unread_count: number;
+  starred_count?: number;
+  stored_entries?: number;
+  storage_bytes?: number;
   engagement_pct: number;
   last_post_at: string | null;
   is_filtered: boolean;
+}
+
+interface StorageSummary {
+  db_bytes: number;
+  total_active_entries: number;
+  total_removed_entries: number;
+  redis_bytes: number;
+  redis_keys: number;
+  auto_cleanup_days: number;
+}
+
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb >= 100 ? 0 : 1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
 }
 
 interface ContentCategory extends FolderOption {
@@ -78,12 +105,14 @@ export default function ContentManager() {
 
   const [feeds, setFeeds] = useState<ContentFeed[]>([]);
   const [categories, setCategories] = useState<ContentCategory[]>([]);
+  const [storageSummary, setStorageSummary] = useState<StorageSummary | null>(null);
 
   // Bộ lọc bảng Feeds (giống ảnh 2)
   const [search, setSearch] = useState("");
   const [folderFilter, setFolderFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [limitCount, setLimitCount] = useState<number>(100);
+  const [sortBy, setSortBy] = useState<"name" | "size" | "entries">("size");
   const [showUrls, setShowUrls] = useState(false);
   const [statusPill, setStatusPill] = useState<
     "all" | "deactivated" | "filtered" | "issues"
@@ -92,11 +121,18 @@ export default function ContentManager() {
   // Chọn nhiều
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
 
-  // Modal thuộc tính / lọc feed
+  // Modal thuộc tính / lọc feed & modal dọn bài cũ
   const [modalState, setModalState] = useState<{
     feed: ContentFeed;
     tab: "properties" | "filter";
   } | null>(null);
+  const [cleanupModal, setCleanupModal] = useState<{
+    feedIds?: number[];
+    label: string;
+  } | null>(null);
+  const [cleanupDays, setCleanupDays] = useState<number>(180);
+  const [cleanupIncludeUnread, setCleanupIncludeUnread] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
 
   // Quản lý thư mục
   const [newFolderTitle, setNewFolderTitle] = useState("");
@@ -134,9 +170,11 @@ export default function ContentManager() {
       const data = (await res.json()) as {
         categories: ContentCategory[];
         feeds: ContentFeed[];
+        storage_summary?: StorageSummary;
       };
       setCategories(data.categories || []);
       setFeeds(data.feeds || []);
+      setStorageSummary(data.storage_summary || null);
     } finally {
       setLoading(false);
     }
@@ -148,28 +186,85 @@ export default function ContentManager() {
 
   const filteredFeeds = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return feeds
-      .filter((f) => {
-        if (folderFilter !== "all" && String(f.category?.id) !== folderFilter) {
-          return false;
-        }
-        if (typeFilter !== "all" && f.feed_type !== typeFilter) {
-          return false;
-        }
-        if (statusPill === "deactivated" && !f.disabled) return false;
-        if (statusPill === "filtered" && !f.is_filtered) return false;
-        if (statusPill === "issues" && (f.parsing_error_count || 0) === 0) return false;
-        if (q) {
-          const hit =
-            f.title.toLowerCase().includes(q) ||
-            f.feed_url.toLowerCase().includes(q) ||
-            (f.category?.title || "").toLowerCase().includes(q);
-          if (!hit) return false;
-        }
-        return true;
-      })
-      .slice(0, limitCount);
-  }, [feeds, search, folderFilter, typeFilter, statusPill, limitCount]);
+    const filtered = feeds.filter((f) => {
+      if (folderFilter !== "all" && String(f.category?.id) !== folderFilter) {
+        return false;
+      }
+      if (typeFilter !== "all" && f.feed_type !== typeFilter) {
+        return false;
+      }
+      if (statusPill === "deactivated" && !f.disabled) return false;
+      if (statusPill === "filtered" && !f.is_filtered) return false;
+      if (statusPill === "issues" && (f.parsing_error_count || 0) === 0) return false;
+      if (q) {
+        const hit =
+          f.title.toLowerCase().includes(q) ||
+          f.feed_url.toLowerCase().includes(q) ||
+          (f.category?.title || "").toLowerCase().includes(q);
+        if (!hit) return false;
+      }
+      return true;
+    });
+
+    filtered.sort((a, b) => {
+      if (sortBy === "size") {
+        return (b.storage_bytes || 0) - (a.storage_bytes || 0);
+      }
+      if (sortBy === "entries") {
+        return (b.stored_entries || 0) - (a.stored_entries || 0);
+      }
+      return a.title.localeCompare(b.title, "vi");
+    });
+
+    return filtered.slice(0, limitCount);
+  }, [feeds, search, folderFilter, typeFilter, statusPill, sortBy, limitCount]);
+
+  const handleClearCache = async () => {
+    setCleaning(true);
+    try {
+      const res = await fetch("/api/content/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clear_cache" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { message?: string };
+      showToast(data.message || "Đã xoá cache thành công.");
+      await loadContent();
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  const handleRunCleanup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cleanupModal) return;
+    setCleaning(true);
+    try {
+      const res = await fetch("/api/content/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "clear_old_entries",
+          feedIds: cleanupModal.feedIds,
+          olderThanDays: cleanupDays,
+          includeUnread: cleanupIncludeUnread,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        message?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        showToast(data.error || "Lỗi khi dọn bài cũ.");
+      } else {
+        showToast(data.message || "Đã dọn bài cũ thành công.");
+        setCleanupModal(null);
+        await loadContent();
+      }
+    } finally {
+      setCleaning(false);
+    }
+  };
 
   const toggleEnabled = async (feed: ContentFeed) => {
     const nextDisabled = !feed.disabled;
@@ -393,6 +488,58 @@ export default function ContentManager() {
 
           {activeTab === "feeds" ? (
             <div className="space-y-4">
+              {/* Thẻ tóm tắt dung lượng & Clear cache / Dọn bài cũ */}
+              <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/60 p-3.5 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-4 text-xs">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-4 h-4 text-blue-600 shrink-0" />
+                    <div>
+                      <div className="font-semibold text-sm">
+                        Postgres: {formatBytes(storageSummary?.db_bytes || 0)}
+                      </div>
+                      <div className="text-slate-500">
+                        {storageSummary?.total_active_entries ?? 0} bài đang lưu · tự xoá sau{" "}
+                        {storageSummary?.auto_cleanup_days ?? 180} ngày (trừ bài ★)
+                      </div>
+                    </div>
+                  </div>
+                  <div className="h-7 w-px bg-slate-200 dark:bg-slate-800 hidden sm:block" />
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <div>
+                      <div className="font-semibold text-sm">
+                        Cache Redis: {formatBytes(storageSummary?.redis_bytes || 0)}
+                      </div>
+                      <div className="text-slate-500">
+                        {storageSummary?.redis_keys ?? 0} keys RSSHub
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <button
+                    onClick={() => void handleClearCache()}
+                    disabled={cleaning}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${cleaning ? "animate-spin" : ""}`} />
+                    Clear cache
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCleanupDays(180);
+                      setCleanupIncludeUnread(false);
+                      setCleanupModal({ label: "Tất cả feeds" });
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-medium"
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    Dọn bài cũ
+                  </button>
+                </div>
+              </div>
+
               {/* Thanh tìm kiếm */}
               <div className="relative">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -443,6 +590,16 @@ export default function ContentManager() {
                   <option value={100}>Hiện: 100</option>
                   <option value={200}>Hiện: 200</option>
                   <option value={9999}>Tất cả</option>
+                </select>
+
+                <select
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as "size" | "entries" | "name")}
+                  className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900"
+                >
+                  <option value="size">Sắp xếp: Dung lượng ↓</option>
+                  <option value="entries">Sắp xếp: Số bài ↓</option>
+                  <option value="name">Sắp xếp: Tên A-Z</option>
                 </select>
 
                 <label className="inline-flex items-center gap-1.5 cursor-pointer px-2">
@@ -504,6 +661,19 @@ export default function ContentManager() {
                       ))}
                     </select>
                     <button
+                      onClick={() => {
+                        setCleanupDays(90);
+                        setCleanupIncludeUnread(false);
+                        setCleanupModal({
+                          feedIds: Array.from(selectedIds),
+                          label: `${selectedIds.size} feed đã chọn`,
+                        });
+                      }}
+                      className="px-3 py-1 rounded-lg bg-amber-600 text-white hover:bg-amber-700 font-medium"
+                    >
+                      Dọn bài cũ
+                    </button>
+                    <button
                       onClick={() => void bulkDelete()}
                       className="px-3 py-1 rounded-lg bg-red-600 text-white hover:bg-red-700 font-medium"
                     >
@@ -540,23 +710,34 @@ export default function ContentManager() {
                       </th>
                       <th className="p-3 w-16">Bật</th>
                       <th className="p-3">Feed</th>
-                      <th className="p-3 w-32 hidden md:table-cell">Tỷ lệ đọc</th>
-                      <th className="p-3 w-24 hidden sm:table-cell">Quét</th>
-                      <th className="p-3 w-24 hidden sm:table-cell">Bài mới</th>
+                      <th className="p-3 w-28">
+                        <button
+                          onClick={() =>
+                            setSortBy((s) => (s === "size" ? "entries" : "size"))
+                          }
+                          className="inline-flex items-center gap-1 hover:text-slate-800 dark:hover:text-slate-200"
+                        >
+                          Dung lượng
+                          <ArrowUpDown className="w-3 h-3" />
+                        </button>
+                      </th>
+                      <th className="p-3 w-28 hidden md:table-cell">Tỷ lệ đọc</th>
+                      <th className="p-3 w-20 hidden sm:table-cell">Quét</th>
+                      <th className="p-3 w-20 hidden sm:table-cell">Bài mới</th>
                       <th className="p-3 w-16 text-center">Tình trạng</th>
-                      <th className="p-3 w-40 text-right">Thao tác</th>
+                      <th className="p-3 w-44 text-right">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
                     {loading ? (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-slate-400 text-xs">
+                        <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
                           Đang tải danh sách feeds...
                         </td>
                       </tr>
                     ) : filteredFeeds.length === 0 ? (
                       <tr>
-                        <td colSpan={8} className="p-8 text-center text-slate-400 text-xs">
+                        <td colSpan={9} className="p-8 text-center text-slate-400 text-xs">
                           Không có feed nào khớp điều kiện.
                         </td>
                       </tr>
@@ -619,6 +800,19 @@ export default function ContentManager() {
                                     </div>
                                   )}
                                 </div>
+                              </div>
+                            </td>
+
+                            {/* Dung lượng & số bài */}
+                            <td className="p-3 text-xs">
+                              <div className="font-semibold">
+                                {formatBytes(feed.storage_bytes || 0)}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {feed.stored_entries ?? 0} bài
+                                {(feed.starred_count || 0) > 0
+                                  ? ` · ★${feed.starred_count}`
+                                  : ""}
                               </div>
                             </td>
 
@@ -705,6 +899,20 @@ export default function ContentManager() {
                                   }`}
                                 >
                                   <Filter className="w-4 h-4" />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setCleanupDays(30);
+                                    setCleanupIncludeUnread(false);
+                                    setCleanupModal({
+                                      feedIds: [feed.id],
+                                      label: feed.title,
+                                    });
+                                  }}
+                                  title="Dọn bớt bài cũ của feed này"
+                                  className="p-1.5 rounded hover:bg-amber-50 dark:hover:bg-amber-950/40 text-amber-600"
+                                >
+                                  <Eraser className="w-4 h-4" />
                                 </button>
                                 <button
                                   onClick={() => void deleteFeed(feed)}
@@ -795,6 +1003,77 @@ export default function ContentManager() {
             void loadContent();
           }}
         />
+      )}
+
+      {cleanupModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setCleanupModal(null)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-5 space-y-4 text-sm"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-base">Dọn bớt bài cũ</h3>
+              <button
+                onClick={() => setCleanupModal(null)}
+                className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Phạm vi: <strong className="text-slate-800 dark:text-slate-200">{cleanupModal.label}</strong>. Các bài bạn đã lưu (Bookmark ★) sẽ luôn được giữ lại.
+            </p>
+
+            <form onSubmit={handleRunCleanup} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1.5">
+                  Xoá bài cũ hơn
+                </label>
+                <select
+                  value={cleanupDays}
+                  onChange={(e) => setCleanupDays(Number(e.target.value))}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                >
+                  <option value={180}>Cũ hơn 180 ngày (6 tháng)</option>
+                  <option value={90}>Cũ hơn 90 ngày (3 tháng)</option>
+                  <option value={30}>Cũ hơn 30 ngày (1 tháng)</option>
+                  <option value={7}>Cũ hơn 7 ngày</option>
+                  <option value={0}>Tất cả bài đã đọc (mọi thời điểm)</option>
+                </select>
+              </div>
+
+              <label className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cleanupIncludeUnread}
+                  onChange={(e) => setCleanupIncludeUnread(e.target.checked)}
+                />
+                Bao gồm cả bài chưa đọc quá hạn (vẫn giữ bài đã lưu ★)
+              </label>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setCleanupModal(null)}
+                  className="px-3.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs"
+                >
+                  Huỷ
+                </button>
+                <button
+                  type="submit"
+                  disabled={cleaning}
+                  className="px-4 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold disabled:opacity-50"
+                >
+                  {cleaning ? "Đang dọn..." : "Xác nhận dọn"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {toast && (

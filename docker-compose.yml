@@ -33,7 +33,8 @@ services:
       FETCHER_ALLOW_PRIVATE_NETWORKS: "1"
       POLLING_FREQUENCY: "30"
       MEDIA_PROXY_MODE: all
-      CLEANUP_ARCHIVE_READ_DAYS: "-1"
+      CLEANUP_ARCHIVE_READ_DAYS: "180"
+      CLEANUP_ARCHIVE_UNREAD_DAYS: "180"
       BASE_URL: ${MINIFLUX_BASE_URL:-http://localhost:8080}
     healthcheck:
       test: ["CMD", "/usr/bin/miniflux", "-healthcheck", "auto"]
@@ -104,6 +105,8 @@ services:
       MINIFLUX_API_KEY: ${MINIFLUX_API_KEY:-}
       MINIFLUX_ADMIN_USERNAME: ${MINIFLUX_ADMIN_USERNAME:-admin}
       MINIFLUX_ADMIN_PASSWORD: ${MINIFLUX_ADMIN_PASSWORD}
+      DATABASE_URL: postgres://miniflux:${DB_PASSWORD}@db/miniflux?sslmode=disable
+      REDIS_HOST: redis
       APIFY_BRIDGE_URL: http://apify-bridge:8000
       READER_UI_PASSWORD: ${READER_UI_PASSWORD:-}
       BACKUP_MOUNT_DIR: /backups
