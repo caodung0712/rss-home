@@ -84,7 +84,6 @@ export async function POST(req: NextRequest) {
       catMap.set(c.title.trim().toLowerCase(), c.id);
     }
     const feedUrlSet = new Set(existingFeeds.map((f) => f.feed_url));
-    const fbTaskId = (process.env.APIFY_FB_TASK_ID || "").trim();
 
     const results: Array<{
       row: number;
@@ -135,20 +134,18 @@ export async function POST(req: NextRequest) {
           const resolved = await resolveYouTubeFeed(target, noShorts);
           feedUrl = resolved.url;
         } else if (platform === "facebook") {
-          if (!fbTaskId) {
-            results.push({
-              row: idx + 2,
-              platform,
-              name: name || target,
-              status: "skipped",
-              message: "Thiếu APIFY_FB_TASK_ID trong .env",
-            });
-            continue;
-          }
-          const matchKey = name || target.replace(/\/+$/, "").split("/").pop() || "";
-          feedUrl = `http://apify-bridge:8000/task/${fbTaskId}.xml?match=${encodeURIComponent(
-            matchKey
-          )}`;
+          const nameParam = name ? `&name=${encodeURIComponent(name)}` : "";
+          feedUrl = `http://apify-bridge:8000/facebook.xml?page=${encodeURIComponent(
+            target
+          )}&mode=page${nameParam}`;
+        } else if (platform === "facebook_apify") {
+          const pageUrl = /^https?:\/\//i.test(target)
+            ? target
+            : `https://www.facebook.com/${target.replace(/^\/+/, "")}`;
+          const nameParam = name ? `&name=${encodeURIComponent(name)}` : "";
+          feedUrl = `http://apify-bridge:8000/apify/facebook.xml?url=${encodeURIComponent(
+            pageUrl
+          )}&limit=15&days=14${nameParam}`;
         } else {
           results.push({
             row: idx + 2,

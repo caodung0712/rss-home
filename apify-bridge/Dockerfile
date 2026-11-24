@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bridge_core.py linkedin_rss.py app.py ./
+COPY bridge_core.py linkedin_rss.py social_free.py social_metrics.py web_free.py app.py ./
 COPY tests ./tests
 
 EXPOSE 8000

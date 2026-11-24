@@ -1,13 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { minifluxFetch } from "@/lib/miniflux";
 import { resolveYouTubeFeed } from "@/lib/youtube";
+import {
+  discoverWebsiteWithMethods,
+  type WebsiteDiscoverOptions,
+  type WebsiteMethod,
+} from "@/lib/web-discovery";
 
-interface DiscoverCandidate {
-  title: string;
-  url: string;
-  type: string;
-}
+const VALID_METHODS = new Set<WebsiteMethod>([
+  "auto",
+  "rss",
+  "sitemap",
+  "scrape",
+  "google_news",
+  "rsshub",
+]);
 
 export async function POST(req: NextRequest) {
   if (!(await isAuthenticated())) {
@@ -19,6 +26,8 @@ export async function POST(req: NextRequest) {
       kind?: string;
       input?: string;
       noShorts?: boolean;
+      method?: string;
+      options?: WebsiteDiscoverOptions;
     };
     const kind = (body.kind || "website").toLowerCase();
     const input = (body.input || "").trim();
@@ -34,46 +43,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    let normalizedUrl = input;
-    if (!/^https?:\/\//i.test(normalizedUrl)) {
-      normalizedUrl = `https://${normalizedUrl}`;
-    }
-
-    try {
-      const discovered = await minifluxFetch<DiscoverCandidate[]>("/v1/discover", {
-        method: "POST",
-        body: JSON.stringify({ url: normalizedUrl }),
-      });
-      if (Array.isArray(discovered) && discovered.length > 0) {
-        return NextResponse.json({ feeds: discovered });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      if (!msg.includes("404")) {
-        throw err;
-      }
-    }
-
-    // Thử dò thêm các đường dẫn RSS phổ biến nếu trang chủ không khai báo thẻ <link rel="alternate">
-    const parsed = new URL(normalizedUrl);
-    if (parsed.pathname === "/" || parsed.pathname === "") {
-      const candidates = ["/rss", "/feed", "/rss.xml", "/feed.xml", "/atom.xml"].map(
-        (suffix) => `${parsed.origin}${suffix}`
-      );
-      const settled = await Promise.all(
-        candidates.map((u) =>
-          minifluxFetch<DiscoverCandidate[]>("/v1/discover", {
-            method: "POST",
-            body: JSON.stringify({ url: u }),
-          }).catch(() => [])
-        )
-      );
-      const merged = settled.flat().filter((f) => Boolean(f?.url));
-      const unique = Array.from(new Map(merged.map((f) => [f.url, f])).values());
-      return NextResponse.json({ feeds: unique });
-    }
-
-    return NextResponse.json({ feeds: [] });
+    const methodRaw = (body.method || "auto").toLowerCase() as WebsiteMethod;
+    const method: WebsiteMethod = VALID_METHODS.has(methodRaw) ? methodRaw : "auto";
+    const result = await discoverWebsiteWithMethods(input, method, body.options || {});
+    return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Không tìm thấy RSS feed từ địa chỉ này." },

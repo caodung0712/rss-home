@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
 import { extractExcerpt, extractThumbnail } from "@/lib/html-utils";
 import { minifluxFetch, type MinifluxEntriesResponse } from "@/lib/miniflux";
+import { getStoredSocialMetrics } from "@/lib/social-metrics";
 
 export async function GET(req: NextRequest) {
   if (!(await isAuthenticated())) {
@@ -46,6 +47,9 @@ export async function GET(req: NextRequest) {
       `/v1/entries?${params.toString()}`
     );
 
+    const entryIds = (data.entries || []).map((e) => e.id);
+    const metricsMap = await getStoredSocialMetrics(entryIds).catch(() => ({} as Record<number, never>));
+
     const items = (data.entries || []).map((entry) => {
       const thumb = extractThumbnail(entry);
       return {
@@ -59,6 +63,7 @@ export async function GET(req: NextRequest) {
         starred: entry.starred,
         reading_time: entry.reading_time,
         tags: Array.isArray(entry.tags) ? entry.tags : [],
+        social_metrics: metricsMap[entry.id] || null,
         feed: {
           id: entry.feed?.id || entry.feed_id,
           title: entry.feed?.title || "",

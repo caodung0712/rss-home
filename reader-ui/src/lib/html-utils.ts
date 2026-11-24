@@ -129,6 +129,28 @@ export function extractYouTubeEmbedId(entryUrl: string): string | null {
   return null;
 }
 
+export function extractTikTokEmbedId(entryUrl: string): string | null {
+  try {
+    const u = new URL(entryUrl);
+    const host = u.hostname.toLowerCase();
+    if (!host.includes("tiktok.com")) return null;
+    const m = u.pathname.match(/\/@[^/]+\/video\/(\d+)/i);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+export function stripLeadingLinkedImage(html: string): string {
+  if (!html) return "";
+  const $ = cheerio.load(html, null, false);
+  const first = $.root().children().first();
+  if (first.length && first.find("img").length > 0 && first.text().trim() === "") {
+    first.remove();
+  }
+  return $.html();
+}
+
 export function extractThumbnail(entry: MinifluxEntry): string | null {
   const imgs = extractImageUrls(entry.content || "", entry.enclosures);
   if (imgs.length > 0) return imgs[0];

@@ -151,26 +151,41 @@ def _is_avatar_url(url: str, avatars: set[str]) -> bool:
     return False
 
 
+def _is_video_url(url: str) -> bool:
+    path = urllib.parse.urlparse(url).path.lower()
+    return path.endswith((".mp4", ".mov", ".m4v", ".webm", ".m3u8"))
+
+
 def _extract_url_from_media_obj(obj: Any) -> list[str]:
     found: list[str] = []
     if isinstance(obj, str) and obj.startswith("http"):
-        found.append(obj.strip())
+        if not _is_video_url(obj):
+            found.append(obj.strip())
     elif isinstance(obj, dict):
         # Bỏ qua object đánh dấu là avatar hoặc profile
         obj_type = str(obj.get("__typename") or obj.get("type") or "").lower()
         if "avatar" in obj_type or "profile" in obj_type:
             return found
+        is_video_obj = "video" in obj_type
         for k in ("image", "photo_image", "large_image", "full_image"):
             sub = obj.get(k)
             if isinstance(sub, dict) and isinstance(sub.get("uri"), str):
                 found.append(sub["uri"].strip())
-            elif isinstance(sub, str) and sub.startswith("http"):
+            elif isinstance(sub, str) and sub.startswith("http") and not _is_video_url(sub):
                 found.append(sub.strip())
-        for k in ("thumbnail", "thumbnailUrl", "imageUrl", "photoUrl", "url", "uri", "src"):
+        img_keys = (
+            ("thumbnail", "thumbnailUrl", "coverUrl", "coverImage")
+            if is_video_obj
+            else ("thumbnail", "thumbnailUrl", "imageUrl", "photoUrl", "url", "uri", "src")
+        )
+        for k in img_keys:
             val = obj.get(k)
             if isinstance(val, str) and val.startswith("http"):
-                # Không lấy link trang facebook.com/photo làm thẻ <img>
-                if not re.match(r"^https?://(www\.|m\.)?facebook\.com/", val, re.IGNORECASE):
+                # Không lấy link trang facebook.com/photo hoặc link file .mp4 làm thẻ <img>
+                if (
+                    not re.match(r"^https?://(www\.|m\.)?facebook\.com/", val, re.IGNORECASE)
+                    and not _is_video_url(val)
+                ):
                     found.append(val.strip())
     return found
 
@@ -220,14 +235,18 @@ def extract_video_url(item: dict[str, Any]) -> str:
         v = _first_str(video_meta, ("downloadAddr", "playAddr", "url"))
         if v:
             return v
-    media = item.get("media")
-    if isinstance(media, list):
-        for entry in media:
-            if isinstance(entry, dict) and str(entry.get("__typename") or entry.get("type") or "").lower() == "video":
-                for k in ("playable_url", "videoUrl", "url"):
-                    v = entry.get(k)
-                    if isinstance(v, str) and v.startswith("http"):
-                        return v.strip()
+    for key in ("media", "attachments"):
+        entries = item.get(key)
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                entry_type = str(entry.get("__typename") or entry.get("type") or "").lower()
+                if "video" in entry_type:
+                    for k in ("playable_url", "videoUrl", "url"):
+                        v = entry.get(k)
+                        if isinstance(v, str) and v.startswith("http"):
+                            return v.strip()
     return ""
 
 

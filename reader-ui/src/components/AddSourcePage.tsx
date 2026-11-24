@@ -10,7 +10,9 @@ import {
   Check,
   CheckCircle2,
   Cpu,
+  Download,
   Facebook,
+  FileJson,
   FileSpreadsheet,
   FolderPlus,
   Globe,
@@ -61,6 +63,46 @@ interface DiscoveredFeed {
   title: string;
   url: string;
   type: string;
+  note?: string;
+  docs?: string;
+}
+
+type WebsiteMethod = "auto" | "rss" | "sitemap" | "scrape" | "google_news" | "rsshub";
+type ConcreteWebsiteMethod = Exclude<WebsiteMethod, "auto">;
+
+interface WebsitePreviewItem {
+  title: string;
+  url: string;
+  published_at?: string;
+  image?: string;
+  summary?: string;
+}
+
+interface MethodProbeResult {
+  method: ConcreteWebsiteMethod;
+  ok: boolean;
+  label: string;
+  summary: string;
+  feedUrl?: string;
+  feedTitle?: string;
+  feeds?: DiscoveredFeed[];
+  previewItems?: WebsitePreviewItem[];
+  sitemaps?: Array<{ loc: string; lastmod?: string }>;
+  chosenSitemap?: string;
+  scrapeModeUsed?: "html" | "json";
+  score: number;
+  error?: string;
+}
+
+interface WebsiteDiscoverResponse {
+  feeds?: DiscoveredFeed[];
+  normalizedUrl?: string;
+  domain?: string;
+  requestedMethod?: WebsiteMethod;
+  recommendedMethod?: ConcreteWebsiteMethod | null;
+  activeResult?: MethodProbeResult | null;
+  methods?: Partial<Record<ConcreteWebsiteMethod, MethodProbeResult>>;
+  error?: string;
 }
 
 type SourceSection =
@@ -171,6 +213,23 @@ export default function AddSourcePage() {
   const [discovering, setDiscovering] = useState(false);
   const [discovered, setDiscovered] = useState<DiscoveredFeed[]>([]);
   const [websiteCrawler, setWebsiteCrawler] = useState(false);
+  const [websiteMethod, setWebsiteMethod] = useState<WebsiteMethod>("auto");
+  const [activeMethodTab, setActiveMethodTab] = useState<ConcreteWebsiteMethod | null>(null);
+  const [websiteProbeMap, setWebsiteProbeMap] = useState<
+    Partial<Record<ConcreteWebsiteMethod, MethodProbeResult>>
+  >({});
+  const [recommendedMethod, setRecommendedMethod] = useState<ConcreteWebsiteMethod | null>(null);
+  const [websiteCustomTitle, setWebsiteCustomTitle] = useState("");
+  // Tuỳ chọn từng phương thức Website
+  const [sitemapUrlOpt, setSitemapUrlOpt] = useState("");
+  const [sitemapMatchOpt, setSitemapMatchOpt] = useState("");
+  const [sitemapLimitOpt, setSitemapLimitOpt] = useState(20);
+  const [scrapeModeOpt, setScrapeModeOpt] = useState<"auto" | "html" | "json">("auto");
+  const [scrapeSelectorOpt, setScrapeSelectorOpt] = useState("");
+  const [scrapeJsonPathOpt, setScrapeJsonPathOpt] = useState("");
+  const [scrapeLimitOpt, setScrapeLimitOpt] = useState(20);
+  const [gnSiteLangOpt, setGnSiteLangOpt] = useState<"vi" | "en">("vi");
+  const [rsshubRouteOpt, setRsshubRouteOpt] = useState("");
   const [activeTopic, setActiveTopic] = useState<TopicPreset | null>(TOPIC_PRESETS[0]);
 
   // YouTube
@@ -193,8 +252,11 @@ export default function AddSourcePage() {
   const [liTitle, setLiTitle] = useState("");
 
   // Facebook
+  const [fbMode, setFbMode] = useState<"free" | "apify">("free");
+  const [fbKind, setFbKind] = useState<"page" | "reels">("page");
   const [fbUrl, setFbUrl] = useState("");
   const [fbName, setFbName] = useState("");
+  const [fbApifyLimit, setFbApifyLimit] = useState(15);
 
   // Google News / Alerts
   const [gnMode, setGnMode] = useState<"keyword" | "alerts">("keyword");
@@ -208,7 +270,26 @@ export default function AddSourcePage() {
   const [otherInput, setOtherInput] = useState("");
   const [otherTitle, setOtherTitle] = useState("");
 
-  // Import OPML / CSV
+  // Import / Export kênh
+  const [channelsUploading, setChannelsUploading] = useState(false);
+  const [overwriteExistingChannels, setOverwriteExistingChannels] = useState(false);
+  const [channelsSummary, setChannelsSummary] = useState<{
+    total: number;
+    added: number;
+    updated: number;
+    exists: number;
+    error: number;
+  } | null>(null);
+  const [channelsResults, setChannelsResults] = useState<
+    Array<{
+      index: number;
+      title: string;
+      feed_url: string;
+      category: string;
+      status: "added" | "updated" | "exists" | "error";
+      message: string;
+    }>
+  >([]);
   const [opmlUploading, setOpmlUploading] = useState(false);
   const [csvUploading, setCsvUploading] = useState(false);
   const [csvNoShorts, setCsvNoShorts] = useState(true);
@@ -237,6 +318,12 @@ export default function AddSourcePage() {
     const isDark = saved ? saved === "dark" : prefersDark;
     setDarkMode(isDark);
     document.documentElement.classList.toggle("dark", isDark);
+
+    const qs = new URLSearchParams(window.location.search);
+    const sec = qs.get("section") as SourceSection | null;
+    if (sec && ["website", "youtube", "tiktok", "linkedin", "x", "facebook", "google_news", "social_other", "import", "manage"].includes(sec)) {
+      setSection(sec);
+    }
   }, []);
 
   const toggleTheme = () => {
@@ -322,36 +409,106 @@ export default function AddSourcePage() {
     }
   };
 
-  const handleDiscoverWebsite = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const runWebsiteDiscover = async (
+    targetMethod: WebsiteMethod = websiteMethod,
+    mergeIntoExisting = false
+  ) => {
     if (!websiteInput.trim()) return;
     setDiscovering(true);
     setFeedback(null);
-    setDiscovered([]);
+    if (!mergeIntoExisting) {
+      setDiscovered([]);
+      setWebsiteProbeMap({});
+      setRecommendedMethod(null);
+      setActiveMethodTab(null);
+      setWebsiteCustomTitle("");
+    }
     try {
       const res = await fetch("/api/sources/discover", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "website", input: websiteInput }),
+        body: JSON.stringify({
+          kind: "website",
+          input: websiteInput,
+          method: targetMethod,
+          options: {
+            sitemapUrl: sitemapUrlOpt.trim() || undefined,
+            match: sitemapMatchOpt.trim() || undefined,
+            limit: targetMethod === "sitemap" ? sitemapLimitOpt : scrapeLimitOpt,
+            scrapeMode: scrapeModeOpt,
+            selector: scrapeSelectorOpt.trim() || undefined,
+            jsonPath: scrapeJsonPathOpt.trim() || undefined,
+            lang: gnSiteLangOpt,
+            customRoute: rsshubRouteOpt.trim() || undefined,
+          },
+        }),
       });
-      const data = (await res.json()) as {
-        feeds?: DiscoveredFeed[];
-        error?: string;
-      };
+      const data = (await res.json()) as WebsiteDiscoverResponse;
       if (!res.ok) {
-        setFeedback({ type: "err", text: data.error || "Không tìm thấy RSS." });
-      } else if (!data.feeds || data.feeds.length === 0) {
-        setFeedback({
-          type: "err",
-          text: "Trang này không công khai RSS mặc định. Bạn thử tìm route trên RSSHub ở mục Telegram / RSSHub.",
-        });
+        setFeedback({ type: "err", text: data.error || "Không tìm thấy nguồn phù hợp." });
+        return;
+      }
+
+      const incomingMethods = data.methods || {};
+      setWebsiteProbeMap((prev) =>
+        mergeIntoExisting ? { ...prev, ...incomingMethods } : incomingMethods
+      );
+
+      if (targetMethod === "auto") {
+        setRecommendedMethod(data.recommendedMethod || null);
+        const firstTab =
+          data.recommendedMethod ||
+          (incomingMethods.rss?.ok
+            ? "rss"
+            : incomingMethods.scrape
+              ? "scrape"
+              : "sitemap");
+        setActiveMethodTab(firstTab);
+        const active = incomingMethods[firstTab] || data.activeResult;
+        setDiscovered(active?.feeds || data.feeds || []);
+        if (active?.feedTitle) setWebsiteCustomTitle(active.feedTitle);
+        if (!data.recommendedMethod) {
+          setFeedback({
+            type: "err",
+            text: L(
+              "Không tự động dò được nguồn khả dụng. Bạn hãy chọn từng phương thức bên dưới để tinh chỉnh (nhập CSS selector, chọn sitemap con, hoặc điền route RSSHub).",
+              "Could not auto-detect a working feed. Choose any method below to customize options (CSS selector, child sitemap, or RSSHub route)."
+            ),
+          });
+        }
       } else {
-        setDiscovered(data.feeds);
+        setActiveMethodTab(targetMethod);
+        const resForMethod = incomingMethods[targetMethod] || data.activeResult || null;
+        setDiscovered(resForMethod?.feeds || data.feeds || []);
+        if (resForMethod?.feedTitle) setWebsiteCustomTitle(resForMethod.feedTitle);
+        if (resForMethod && !resForMethod.ok) {
+          setFeedback({
+            type: "err",
+            text: resForMethod.error || resForMethod.summary,
+          });
+        }
       }
     } catch {
       setFeedback({ type: "err", text: "Không dò được RSS từ trang web." });
     } finally {
       setDiscovering(false);
+    }
+  };
+
+  const handleDiscoverWebsite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runWebsiteDiscover(websiteMethod, false);
+  };
+
+  const handleSelectMethodTab = (method: ConcreteWebsiteMethod) => {
+    setActiveMethodTab(method);
+    setFeedback(null);
+    const cached = websiteProbeMap[method];
+    if (cached) {
+      setDiscovered(cached.feeds || []);
+      if (cached.feedTitle) setWebsiteCustomTitle(cached.feedTitle);
+    } else if (websiteInput.trim()) {
+      void runWebsiteDiscover(method, true);
     }
   };
 
@@ -444,6 +601,45 @@ export default function AddSourcePage() {
     }
   };
 
+  const handleUploadChannelsJson = async (file: File) => {
+    setChannelsUploading(true);
+    setFeedback(null);
+    setChannelsSummary(null);
+    setChannelsResults([]);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("overwriteExisting", overwriteExistingChannels ? "true" : "false");
+      const res = await fetch("/api/sources/import-channels", {
+        method: "POST",
+        body: fd,
+      });
+      const data = (await res.json()) as {
+        summary?: typeof channelsSummary;
+        results?: typeof channelsResults;
+        error?: string;
+      };
+      if (!res.ok) {
+        setFeedback({ type: "err", text: data.error || "Import file kênh JSON thất bại." });
+      } else {
+        setChannelsSummary(data.summary || null);
+        setChannelsResults(data.results || []);
+        const s = data.summary;
+        setFeedback({
+          type: "ok",
+          text: s
+            ? `Đã xử lý ${s.total} kênh: thêm mới ${s.added}, cập nhật ${s.updated}, đã có ${s.exists}, lỗi ${s.error}.`
+            : "Đã import danh sách kênh thành công!",
+        });
+        await loadConfig();
+      }
+    } catch {
+      setFeedback({ type: "err", text: "Lỗi khi tải file JSON danh sách kênh." });
+    } finally {
+      setChannelsUploading(false);
+    }
+  };
+
   const handleToggleCrawler = async (feed: FeedItem) => {
     const nextCrawler = !feed.crawler;
     setFeeds((prev) =>
@@ -477,7 +673,7 @@ export default function AddSourcePage() {
     { id: "facebook", label: L("Trang Facebook", "Facebook Pages"), icon: <Facebook className="w-4 h-4 text-blue-600" /> },
     { id: "google_news", label: "Google News / Alerts", icon: <Search className="w-4 h-4 text-emerald-600" /> },
     { id: "social_other", label: "Telegram / RSSHub", icon: <Send className="w-4 h-4 text-indigo-500" /> },
-    { id: "import", label: "Import OPML / CSV", icon: <Upload className="w-4 h-4 text-amber-600" /> },
+    { id: "import", label: L("Import / Export kênh", "Import / Export"), icon: <Upload className="w-4 h-4 text-amber-600" /> },
     { id: "manage", label: L(`Đang theo dõi (${feeds.length})`, `Following (${feeds.length})`), icon: <ListChecks className="w-4 h-4 text-slate-500" /> },
   ];
 
@@ -676,7 +872,7 @@ export default function AddSourcePage() {
                       type="text"
                       value={websiteInput}
                       onChange={(e) => setWebsiteInput(e.target.value)}
-                      placeholder={L("Nhập địa chỉ trang web (vd: vnexpress.net, tinhte.vn) hoặc dán URL RSS...", "Enter website URL (e.g. techcrunch.com) or paste RSS URL...")}
+                      placeholder={L("Nhập địa chỉ trang web (vd: vnexpress.net, bbw.vn) hoặc dán URL RSS...", "Enter website URL (e.g. techcrunch.com) or paste RSS URL...")}
                       className="w-full pl-11 pr-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
                     />
                   </div>
@@ -690,6 +886,228 @@ export default function AddSourcePage() {
                   </button>
                 </form>
 
+                {/* Chọn phương thức dò / vượt trang không có RSS */}
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
+                    {L(
+                      "Phương thức lấy tin (Tự động chọn cách phù hợp nhất trước, hoặc bấm chọn cách bạn muốn thử):",
+                      "Discovery method (Auto picks the best match first, or pick any method manually):"
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        { id: "auto", label: L("✨ Tự động (Khuyên dùng)", "✨ Auto (Recommended)") },
+                        { id: "rss", label: L("RSS mặc định", "Native RSS") },
+                        { id: "sitemap", label: "1. Sitemap.xml" },
+                        { id: "scrape", label: L("2. Scraper miễn phí ($0)", "2. Free Scraper ($0)") },
+                        { id: "google_news", label: "3. Google News RSS" },
+                        { id: "rsshub", label: "4. RSSHub Route" },
+                      ] as Array<{ id: WebsiteMethod; label: string }>
+                    ).map((m) => {
+                      const isSelected =
+                        websiteMethod === m.id ||
+                        (websiteMethod === "auto" && activeMethodTab === m.id);
+                      const probe = m.id !== "auto" ? websiteProbeMap[m.id] : undefined;
+                      const isRec = m.id !== "auto" && recommendedMethod === m.id;
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          disabled={discovering}
+                          onClick={() => {
+                            setWebsiteMethod(m.id);
+                            if (m.id === "auto") {
+                              if (websiteInput.trim() && Object.keys(websiteProbeMap).length > 0) {
+                                void runWebsiteDiscover("auto", false);
+                              }
+                            } else {
+                              handleSelectMethodTab(m.id);
+                            }
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs border inline-flex items-center gap-1.5 transition-colors ${
+                            isSelected
+                              ? "border-blue-600 bg-blue-600 text-white font-semibold"
+                              : "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                          }`}
+                        >
+                          <span>{m.label}</span>
+                          {probe && (
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded-full ${
+                                isSelected
+                                  ? "bg-white/20 text-white"
+                                  : probe.ok
+                                    ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
+                                    : "bg-slate-100 text-slate-400 dark:bg-slate-800"
+                              }`}
+                            >
+                              {probe.ok ? "✓" : "—"}
+                            </span>
+                          )}
+                          {isRec && (
+                            <span
+                              className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${
+                                isSelected
+                                  ? "bg-amber-300 text-slate-900"
+                                  : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                              }`}
+                            >
+                              {L("Đề xuất", "Best")}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Tuỳ chọn nâng cao theo phương thức đang chọn */}
+                {(() => {
+                  const shownMethod: ConcreteWebsiteMethod | null =
+                    websiteMethod !== "auto" ? websiteMethod : activeMethodTab;
+                  const activeProbe = shownMethod ? websiteProbeMap[shownMethod] : undefined;
+                  if (!shownMethod || shownMethod === "rss") {
+                    return null;
+                  }
+
+                  return (
+                    <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                          {shownMethod === "sitemap" && L("Tuỳ chỉnh 1. Sitemap.xml", "Options: 1. Sitemap.xml")}
+                          {shownMethod === "scrape" && L("Tuỳ chỉnh 2. Scraper miễn phí (HTML / JSON API)", "Options: 2. Free Scraper (HTML / JSON API)")}
+                          {shownMethod === "google_news" && L("Tuỳ chỉnh 3. Google News RSS", "Options: 3. Google News RSS")}
+                          {shownMethod === "rsshub" && L("Tuỳ chỉnh 4. RSSHub Route", "Options: 4. RSSHub Route")}
+                        </div>
+                        {websiteInput.trim() && (
+                          <button
+                            type="button"
+                            disabled={discovering}
+                            onClick={() => void runWebsiteDiscover(shownMethod, true)}
+                            className="px-3 py-1 rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-60"
+                          >
+                            {discovering && <Loader2 className="w-3 h-3 animate-spin" />}
+                            {L("Thử phương thức này", "Test this method")}
+                          </button>
+                        )}
+                      </div>
+
+                      {shownMethod === "sitemap" && (
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+                          {activeProbe?.sitemaps && activeProbe.sitemaps.length > 0 && (
+                            <select
+                              value={sitemapUrlOpt}
+                              onChange={(e) => setSitemapUrlOpt(e.target.value)}
+                              className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                            >
+                              <option value="">{L("Tự chọn sitemap con phù hợp nhất", "Auto-pick best child sitemap")}</option>
+                              {activeProbe.sitemaps.map((sm) => (
+                                <option key={sm.loc} value={sm.loc}>
+                                  {sm.loc.replace(/^https?:\/\/[^/]+/, "")}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <input
+                            type="text"
+                            value={sitemapMatchOpt}
+                            onChange={(e) => setSitemapMatchOpt(e.target.value)}
+                            placeholder={L("Lọc URL chứa chuỗi (vd: /tin-tuc/, /blog/)", "Filter URL path (e.g. /blog/, /news/)")}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          />
+                          <select
+                            value={sitemapLimitOpt}
+                            onChange={(e) => setSitemapLimitOpt(Number(e.target.value))}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          >
+                            <option value={10}>10 {L("bài mới nhất", "latest items")}</option>
+                            <option value={20}>20 {L("bài mới nhất", "latest items")}</option>
+                            <option value={30}>30 {L("bài mới nhất", "latest items")}</option>
+                            <option value={50}>50 {L("bài mới nhất", "latest items")}</option>
+                          </select>
+                        </div>
+                      )}
+
+                      {shownMethod === "scrape" && (
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5 text-xs">
+                          <select
+                            value={scrapeModeOpt}
+                            onChange={(e) => setScrapeModeOpt(e.target.value as "auto" | "html" | "json")}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          >
+                            <option value="auto">{L("Tự nhận diện HTML / JSON", "Auto-detect HTML / JSON")}</option>
+                            <option value="html">HTML Page</option>
+                            <option value="json">JSON API</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={scrapeSelectorOpt}
+                            onChange={(e) => setScrapeSelectorOpt(e.target.value)}
+                            placeholder={L("CSS selector tuỳ chọn (vd: article, .post-card)", "Optional CSS selector (e.g. article, .post)")}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          />
+                          <input
+                            type="text"
+                            value={scrapeJsonPathOpt}
+                            onChange={(e) => setScrapeJsonPathOpt(e.target.value)}
+                            placeholder={L("JSON path nếu là API (vd: data.items)", "JSON path if API (e.g. data.items)")}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          />
+                          <select
+                            value={scrapeLimitOpt}
+                            onChange={(e) => setScrapeLimitOpt(Number(e.target.value))}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          >
+                            <option value={10}>10 {L("bài", "items")}</option>
+                            <option value={20}>20 {L("bài", "items")}</option>
+                            <option value={30}>30 {L("bài", "items")}</option>
+                            <option value={50}>50 {L("bài", "items")}</option>
+                          </select>
+                        </div>
+                      )}
+
+                      {shownMethod === "google_news" && (
+                        <div className="flex flex-wrap items-center gap-2.5 text-xs">
+                          <span className="text-slate-500">{L("Ngôn ngữ tìm kiếm:", "Search edition:")}</span>
+                          <select
+                            value={gnSiteLangOpt}
+                            onChange={(e) => setGnSiteLangOpt(e.target.value as "vi" | "en")}
+                            className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          >
+                            <option value="vi">Tiếng Việt (VN)</option>
+                            <option value="en">English (US)</option>
+                          </select>
+                        </div>
+                      )}
+
+                      {shownMethod === "rsshub" && (
+                        <div className="space-y-2 text-xs">
+                          <input
+                            type="text"
+                            value={rsshubRouteOpt}
+                            onChange={(e) => setRsshubRouteOpt(e.target.value)}
+                            placeholder={L("Route RSSHub tuỳ chọn để thử (vd: /vnexpress/tin-tuc hoặc để trống để tự tìm)", "Optional RSSHub route to test (e.g. /vnexpress/tin-tuc)")}
+                            className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800"
+                          />
+                        </div>
+                      )}
+
+                      {activeProbe && (
+                        <div
+                          className={`text-xs ${
+                            activeProbe.ok
+                              ? "text-green-700 dark:text-green-300"
+                              : "text-slate-500 dark:text-slate-400"
+                          }`}
+                        >
+                          {activeProbe.summary}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <label className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
                   <input
                     type="checkbox"
@@ -700,11 +1118,20 @@ export default function AddSourcePage() {
                   {L("Tự lấy toàn văn bài viết (bật cho blog chỉ đăng đoạn tóm tắt trong RSS)", "Auto-fetch full article text (for summary-only RSS feeds)")}
                 </label>
 
-                {/* Kết quả dò RSS */}
+                {/* Kết quả dò RSS / Feed đề xuất */}
                 {discovered.length > 0 && (
-                  <div className="space-y-2.5 pt-2">
-                    <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                      {L(`Tìm thấy ${discovered.length} nguồn RSS`, `Found ${discovered.length} RSS feed(s)`)}
+                  <div className="space-y-3 pt-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                        {L(`Tìm thấy ${discovered.length} nguồn phù hợp`, `Found ${discovered.length} feed(s)`)}
+                      </div>
+                      <input
+                        type="text"
+                        value={websiteCustomTitle}
+                        onChange={(e) => setWebsiteCustomTitle(e.target.value)}
+                        placeholder={L("Tên hiển thị tuỳ chọn (nếu muốn đổi)", "Optional custom feed title")}
+                        className="px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs min-w-[220px]"
+                      />
                     </div>
                     {discovered.map((feed) => {
                       const already = existingFeedUrls.has(feed.url);
@@ -714,38 +1141,97 @@ export default function AddSourcePage() {
                           className="flex items-center justify-between gap-3 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900"
                         >
                           <div className="min-w-0">
-                            <div className="font-semibold text-sm truncate">
-                              {feed.title || feed.url}
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-sm truncate">
+                                {feed.title || feed.url}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-medium text-slate-500 uppercase shrink-0">
+                                {feed.type}
+                              </span>
                             </div>
                             <div className="text-xs text-slate-500 truncate">
                               {feed.url}
                             </div>
+                            {feed.note && (
+                              <div className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                                {feed.note}
+                              </div>
+                            )}
                           </div>
-                          {already ? (
-                            <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 shrink-0">
-                              <Check className="w-3.5 h-3.5 text-green-600" />
-                              {L("Đã theo dõi", "Following")}
-                            </span>
-                          ) : (
-                            <button
-                              disabled={submitting}
-                              onClick={() =>
-                                void subscribe({
-                                  platform: "rss",
-                                  feedUrl: feed.url,
-                                  title: feed.title,
-                                  crawler: websiteCrawler,
-                                  ...getFolderPayload(),
-                                })
-                              }
-                              className="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold shrink-0"
-                            >
-                              {L("+ Theo dõi", "+ Follow")}
-                            </button>
-                          )}
+                          <div className="flex items-center gap-2 shrink-0">
+                            {feed.type === "rsshub-template" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const pathOnly = feed.url.replace(/^http:\/\/rsshub:1200/i, "");
+                                  setRsshubRouteOpt(pathOnly);
+                                  setWebsiteMethod("rsshub");
+                                  setActiveMethodTab("rsshub");
+                                }}
+                                className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs hover:bg-slate-100 dark:hover:bg-slate-800"
+                              >
+                                {L("Sửa route", "Edit route")}
+                              </button>
+                            )}
+                            {already ? (
+                              <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-xs text-slate-500 shrink-0">
+                                <Check className="w-3.5 h-3.5 text-green-600" />
+                                {L("Đã theo dõi", "Following")}
+                              </span>
+                            ) : (
+                              <button
+                                disabled={submitting}
+                                onClick={() =>
+                                  void subscribe({
+                                    platform: "rss",
+                                    feedUrl: feed.url,
+                                    title: websiteCustomTitle.trim() || feed.title,
+                                    crawler: websiteCrawler,
+                                    ...getFolderPayload(),
+                                  })
+                                }
+                                className="px-4 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-semibold shrink-0"
+                              >
+                                {L("+ Theo dõi", "+ Follow")}
+                              </button>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
+
+                    {/* Xem trước các bài viết lấy được từ phương thức đang chọn */}
+                    {activeMethodTab &&
+                      websiteProbeMap[activeMethodTab]?.previewItems &&
+                      websiteProbeMap[activeMethodTab]!.previewItems!.length > 0 && (
+                        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 space-y-2">
+                          <div className="text-xs font-semibold text-slate-500">
+                            {L(
+                              `Xem trước ${websiteProbeMap[activeMethodTab]!.previewItems!.length} bài lấy thử:`,
+                              `Preview of ${websiteProbeMap[activeMethodTab]!.previewItems!.length} extracted item(s):`
+                            )}
+                          </div>
+                          <ul className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                            {websiteProbeMap[activeMethodTab]!.previewItems!.slice(0, 6).map((item) => (
+                              <li key={item.url} className="py-1.5 flex items-baseline justify-between gap-3">
+                                <a
+                                  href={item.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-slate-800 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 font-medium line-clamp-1"
+                                >
+                                  {item.title}
+                                </a>
+                                {item.published_at && (
+                                  <span className="text-[11px] text-slate-400 shrink-0">
+                                    {item.published_at.slice(0, 10)}
+                                  </span>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                   </div>
                 )}
               </div>
@@ -1153,71 +1639,209 @@ export default function AddSourcePage() {
           {section === "facebook" && (
             <div className="space-y-5">
               <div>
-                <h2 className="text-xl font-bold">Theo dõi Trang Facebook</h2>
+                <h2 className="text-xl font-bold">
+                  {L("Theo dõi Trang Facebook (Miễn phí $0)", "Follow Facebook Page (Free $0)")}
+                </h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  Kết nối qua `apify-bridge` nội bộ: chỉ dùng 1 Task Apify chung và tách feed riêng cho từng Page bằng bộ lọc tên Page.
+                  {L(
+                    "Mặc định lấy trực tiếp bài viết công khai qua RSSHub nội bộ (không cần Apify, có ảnh/video đầy đủ) và tự động dự phòng qua Google News nếu Page bị khoá khách.",
+                    "Fetches public posts directly via self-hosted RSSHub (no Apify needed, includes full images/videos) with automatic Google News fallback for login-gated pages."
+                  )}
                 </p>
               </div>
 
-              <div
-                className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
-                  readiness.apify_token_set && readiness.apify_task_set
-                    ? "bg-green-50 border-green-200 text-green-800 dark:bg-green-950/40 dark:border-green-900 dark:text-green-200"
-                    : "bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/40 dark:border-amber-900 dark:text-amber-200"
-                }`}
-              >
-                {readiness.apify_token_set && readiness.apify_task_set ? (
-                  <>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-800 p-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFbMode("free");
+                      setFbKind("page");
+                    }}
+                    className={`px-3 py-1.5 rounded-lg ${
+                      fbMode === "free" && fbKind === "page"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                        : ""
+                    }`}
+                  >
+                    {L("Bài viết Page (Free $0)", "Page Posts (Free $0)")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFbMode("free");
+                      setFbKind("reels");
+                    }}
+                    className={`px-3 py-1.5 rounded-lg ${
+                      fbMode === "free" && fbKind === "reels"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                        : ""
+                    }`}
+                  >
+                    {L("Reels (Free $0)", "Reels (Free $0)")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFbMode("apify")}
+                    className={`px-3 py-1.5 rounded-lg ${
+                      fbMode === "apify"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-semibold"
+                        : ""
+                    }`}
+                  >
+                    {L("Apify (Dán link trực tiếp)", "Apify (Direct URL)")}
+                  </button>
+                </div>
+              </div>
+
+              {fbMode === "free" ? (
+                <>
+                  <div className="p-3 rounded-xl border bg-green-50 border-green-200 text-green-800 dark:bg-green-950/40 dark:border-green-900 dark:text-green-200 text-xs flex items-center gap-2">
                     <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    Đã cấu hình đủ `APIFY_TOKEN` và `APIFY_FB_TASK_ID` trong `.env`.
-                  </>
-                ) : (
-                  <>
-                    <AlertCircle className="w-4 h-4 shrink-0" />
-                    Chưa điền đủ `APIFY_TOKEN` và `APIFY_FB_TASK_ID` trong `.env`. Hãy tạo Task trên Apify cho `alfalfa/facebook-posts-scraper` rồi điền vào `.env`.
-                  </>
-                )}
-              </div>
+                    {L(
+                      "Sẵn sàng dùng miễn phí $0 qua RSSHub (/facebook/page) + Google News fallback — không cần APIFY_TOKEN.",
+                      "Ready to use free ($0) via RSSHub (/facebook/page) + Google News fallback — no APIFY_TOKEN needed."
+                    )}
+                  </div>
 
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void subscribe({
-                    platform: "facebook",
-                    pageName: fbName,
-                    pageUrl: fbUrl,
-                    title: fbName || undefined,
-                    ...getFolderPayload("Facebook"),
-                  });
-                }}
-                className="space-y-3"
-              >
-                <input
-                  type="text"
-                  value={fbName}
-                  onChange={(e) => setFbName(e.target.value)}
-                  placeholder="Tên Page chính xác (vd: Nguyễn Hữu Trí, 5 Phút Crypto)"
-                  required
-                  className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <input
-                  type="text"
-                  value={fbUrl}
-                  onChange={(e) => setFbUrl(e.target.value)}
-                  placeholder="URL Page Facebook (vd: https://www.facebook.com/nguyenhuutri)"
-                  className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
-                />
-                <p className="text-xs text-slate-500">
-                  Lưu ý: Nhớ thêm URL Page này vào mục `startUrls` trong Task trên Apify để scraper thu thập bài viết về cho bridge.
-                </p>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold"
-                >
-                  + Theo dõi Facebook Page
-                </button>
-              </form>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void subscribe({
+                        platform: "facebook",
+                        fbMode: "free",
+                        fbKind,
+                        pageUrl: fbUrl,
+                        pageName: fbName || undefined,
+                        title: fbName || undefined,
+                        ...getFolderPayload("Facebook"),
+                      });
+                    }}
+                    className="space-y-3"
+                  >
+                    <input
+                      type="text"
+                      value={fbUrl}
+                      onChange={(e) => setFbUrl(e.target.value)}
+                      placeholder={L(
+                        "Dán link Page Facebook hoặc username (vd: https://www.facebook.com/openai hoặc tintucvtv24)",
+                        "Paste Facebook Page URL or username (e.g. https://www.facebook.com/openai)"
+                      )}
+                      required
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <input
+                      type="text"
+                      value={fbName}
+                      onChange={(e) => setFbName(e.target.value)}
+                      placeholder={L("Tên hiển thị tuỳ chọn (vd: VTV24, OpenAI)", "Optional display name (e.g. OpenAI)")}
+                      className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                    />
+                    <p className="text-xs text-slate-500">
+                      {L(
+                        "Mẹo: Các Page công khai lấy trực tiếp bài mới nhất không cần cookie. Nếu Page nào bị Facebook yêu cầu đăng nhập mới xem được, bạn có thể thêm tuỳ chọn `FACEBOOK_COOKIE` (`c_user=...; xs=...`) vào `.env` (vẫn miễn phí $0).",
+                        "Tip: Public pages work with zero cookies. For login-walled pages, you can optionally add `FACEBOOK_COOKIE` (`c_user=...; xs=...`) to `.env` ($0 free)."
+                      )}
+                    </p>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold"
+                    >
+                      {L("+ Theo dõi Facebook Page (Miễn phí)", "+ Follow Facebook Page (Free)")}
+                    </button>
+                  </form>
+                </>
+              ) : (
+                <>
+                  <div
+                    className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                      readiness.apify_token_set
+                        ? "bg-green-50 border-green-200 text-green-800 dark:bg-green-950/40 dark:border-green-900 dark:text-green-200"
+                        : "bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/40 dark:border-amber-900 dark:text-amber-200"
+                    }`}
+                  >
+                    {readiness.apify_token_set ? (
+                      <>
+                        <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        {L(
+                          "Đã có `APIFY_TOKEN` — chỉ cần dán link trang Facebook bên dưới, KHÔNG cần tạo Task ID hay nhập URL trên web Apify nữa.",
+                          "`APIFY_TOKEN` is set — just paste any Facebook Page URL below; no Task ID or Apify dashboard edits needed."
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        {L(
+                          "Chỉ cần điền duy nhất `APIFY_TOKEN` vào file `.env` (không cần `APIFY_FB_TASK_ID`), hoặc dùng tab Bài viết Page (Free $0) ở trên.",
+                          "Only `APIFY_TOKEN` is needed in `.env` (no `APIFY_FB_TASK_ID` required), or use Page Posts (Free $0) above."
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void subscribe({
+                        platform: "facebook",
+                        fbMode: "apify",
+                        pageUrl: fbUrl,
+                        pageName: fbName || undefined,
+                        title: fbName || undefined,
+                        apifyLimit: fbApifyLimit,
+                        apifyDays: 14,
+                        ...getFolderPayload("Facebook"),
+                      });
+                    }}
+                    className="space-y-3"
+                  >
+                    <input
+                      type="text"
+                      value={fbUrl}
+                      onChange={(e) => setFbUrl(e.target.value)}
+                      placeholder={L(
+                        "Dán link trang Facebook cần Apify cào (vd: https://www.facebook.com/nguyenhuutri)",
+                        "Paste Facebook Page URL for Apify (e.g. https://www.facebook.com/openai)"
+                      )}
+                      required
+                      className="w-full px-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        type="text"
+                        value={fbName}
+                        onChange={(e) => setFbName(e.target.value)}
+                        placeholder={L("Tên hiển thị tuỳ chọn (vd: Nguyễn Hữu Trí)", "Optional display name")}
+                        className="flex-1 min-w-[200px] px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                      />
+                      <select
+                        value={fbApifyLimit}
+                        onChange={(e) => setFbApifyLimit(Number(e.target.value))}
+                        className="px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm"
+                      >
+                        <option value={10}>{L("Cào 10 bài/lần", "10 posts/run")}</option>
+                        <option value={15}>{L("Cào 15 bài/lần (khuyên dùng)", "15 posts/run (recommended)")}</option>
+                        <option value={25}>{L("Cào 25 bài/lần", "25 posts/run")}</option>
+                        <option value={30}>{L("Cào 30 bài/lần", "30 posts/run")}</option>
+                      </select>
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {L(
+                        "Hệ thống tự gọi Apify cho đúng link bạn dán (mặc định dùng `alfalfa/facebook-posts-scraper`, cache 3 giờ để tiết kiệm $5 miễn phí/tháng).",
+                        "Automatically runs Apify for the pasted URL (`alfalfa/facebook-posts-scraper`, cached 3 hours to protect your $5/mo free credits)."
+                      )}
+                    </p>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold"
+                    >
+                      {L("+ Theo dõi bằng Apify (Tự động)", "+ Follow with Apify (Auto)")}
+                    </button>
+                  </form>
+                </>
+              )}
             </div>
           )}
 
@@ -1425,13 +2049,160 @@ export default function AddSourcePage() {
             </div>
           )}
 
-          {/* 7. IMPORT HÀNG LOẠT (OPML / CSV) */}
+          {/* 7. IMPORT / EXPORT KÊNH ĐÃ FOLLOW */}
           {section === "import" && (
             <div className="space-y-6">
               <div>
-                <h2 className="text-xl font-bold">Import hàng loạt từ Inoreader & CSV</h2>
+                <h2 className="text-xl font-bold">
+                  {L("Export & Import danh sách kênh", "Export & Import Followed Channels")}
+                </h2>
                 <p className="text-sm text-slate-500 mt-1">
-                  Tải trực tiếp file `inoreader.opml` hoặc `social.csv` lên từ máy tính, không cần chạy lệnh thủ công.
+                  {L(
+                    "Xuất toàn bộ các kênh đang theo dõi (kèm thư mục, tên hiển thị, chế độ toàn văn, bộ lọc) ra file để chuyển sang máy khác nhanh chóng.",
+                    "Export all followed channels (folders, custom titles, crawler, filter rules) to move to another machine effortlessly."
+                  )}
+                </p>
+              </div>
+
+              {/* Khối Export & Import JSON chuyển máy */}
+              <div className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-sm flex items-center gap-2">
+                      <FileJson className="w-4 h-4 text-blue-600" />
+                      {L("Sao lưu & Chuyển máy (JSON / OPML)", "Backup & Migrate (JSON / OPML)")}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {L(
+                        `Hiện tài khoản đang theo dõi ${feeds.length} kênh trong ${categories.length} thư mục. File export không chứa mật khẩu hay API token.`,
+                        `Currently following ${feeds.length} channels across ${categories.length} folders. Exported files contain no passwords or API tokens.`
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a
+                      href="/api/sources/export?format=json"
+                      download
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-sm"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      {L("Export JSON (Đầy đủ)", "Export JSON (Full)")}
+                    </a>
+                    <a
+                      href="/api/sources/export?format=opml"
+                      download
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Export OPML
+                    </a>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200 dark:border-slate-800 pt-4 space-y-3">
+                  <label className="rounded-xl border-2 border-dashed border-blue-300 dark:border-blue-900/70 hover:border-blue-500 p-5 flex flex-col items-center justify-center text-center gap-2 cursor-pointer bg-blue-50/40 dark:bg-blue-950/20 transition-colors">
+                    <Upload className="w-7 h-7 text-blue-600" />
+                    <div className="font-semibold text-sm">
+                      {channelsUploading
+                        ? L("Đang import danh sách kênh...", "Importing channels...")
+                        : L("Chọn file JSON đã export (.json) để Import vào máy này", "Choose exported JSON file (.json) to Import")}
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      {L(
+                        "Tự động tạo thư mục còn thiếu, giữ nguyên tên nguồn, toàn văn & bộ lọc",
+                        "Auto-creates missing folders, restores titles, crawler & filter rules"
+                      )}
+                    </p>
+                    <input
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      disabled={channelsUploading}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (f) void handleUploadChannelsJson(f);
+                        e.target.value = "";
+                      }}
+                    />
+                  </label>
+
+                  <label className="inline-flex items-center gap-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={overwriteExistingChannels}
+                      onChange={(e) => setOverwriteExistingChannels(e.target.checked)}
+                      className="rounded border-slate-300"
+                    />
+                    {L(
+                      "Nếu kênh đã tồn tại trên máy mới, cập nhật lại thư mục / tên / cài đặt theo file import",
+                      "If a channel already exists, overwrite its folder / title / settings from the import file"
+                    )}
+                  </label>
+                </div>
+
+                {channelsSummary && (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                    <div className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800/70 text-xs font-semibold flex flex-wrap gap-3">
+                      <span>Tổng: {channelsSummary.total}</span>
+                      <span className="text-green-700 dark:text-green-400">
+                        Thêm mới: {channelsSummary.added}
+                      </span>
+                      {channelsSummary.updated > 0 && (
+                        <span className="text-blue-700 dark:text-blue-400">
+                          Cập nhật: {channelsSummary.updated}
+                        </span>
+                      )}
+                      <span className="text-slate-500">Đã có: {channelsSummary.exists}</span>
+                      {channelsSummary.error > 0 && (
+                        <span className="text-red-600">Lỗi: {channelsSummary.error}</span>
+                      )}
+                    </div>
+                    {channelsResults.length > 0 && (
+                      <div className="divide-y divide-slate-200 dark:divide-slate-800 max-h-64 overflow-y-auto text-xs">
+                        {channelsResults.map((r) => (
+                          <div
+                            key={`${r.index}-${r.feed_url}`}
+                            className="px-4 py-2 flex items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-medium truncate">
+                                [{r.category}] {r.title}
+                              </div>
+                              <div className="text-slate-500 truncate">
+                                {r.status === "error" ? r.message : r.feed_url}
+                              </div>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded font-medium shrink-0 ${
+                                r.status === "added"
+                                  ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+                                  : r.status === "updated"
+                                    ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                                    : r.status === "exists"
+                                      ? "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                                      : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                              }`}
+                            >
+                              {r.status === "added"
+                                ? "Đã thêm"
+                                : r.status === "updated"
+                                  ? "Đã cập nhật"
+                                  : r.status === "exists"
+                                    ? "Đã có"
+                                    : "Lỗi"}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <h3 className="text-base font-bold">Import từ Inoreader (OPML) & CSV</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Tải trực tiếp file `inoreader.opml` hoặc `social.csv` lên từ máy tính.
                 </p>
               </div>
 
@@ -1540,13 +2311,31 @@ export default function AddSourcePage() {
                 <h2 className="text-xl font-bold">
                   {L(`Nguồn đang theo dõi (${feeds.length})`, `Following (${feeds.length})`)}
                 </h2>
-                <input
-                  type="text"
-                  value={manageQuery}
-                  onChange={(e) => setManageQuery(e.target.value)}
-                  placeholder={L("Lọc theo tên, URL hoặc thư mục...", "Filter by name, URL or folder...")}
-                  className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm w-64"
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <a
+                    href="/api/sources/export?format=json"
+                    download
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export JSON
+                  </a>
+                  <a
+                    href="/api/sources/export?format=opml"
+                    download
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export OPML
+                  </a>
+                  <input
+                    type="text"
+                    value={manageQuery}
+                    onChange={(e) => setManageQuery(e.target.value)}
+                    placeholder={L("Lọc theo tên, URL hoặc thư mục...", "Filter by name, URL or folder...")}
+                    className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm w-64"
+                  />
+                </div>
               </div>
 
               <div className="rounded-xl border border-slate-200 dark:border-slate-800 divide-y divide-slate-200 dark:divide-slate-800">

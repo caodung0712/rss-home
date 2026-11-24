@@ -18,6 +18,10 @@ interface SubscribeBody {
   feedUrl?: string;
   pageName?: string;
   pageUrl?: string;
+  fbMode?: "free" | "apify";
+  fbKind?: "page" | "reels" | "photos";
+  apifyLimit?: number;
+  apifyDays?: number;
   useFxTwitter?: boolean;
   title?: string;
   categoryId?: number;
@@ -101,30 +105,62 @@ export async function POST(req: NextRequest) {
     let customTitle = (body.title || "").trim();
 
     if (body.platform === "facebook") {
-      const taskId = (process.env.APIFY_FB_TASK_ID || "").trim();
-      if (!taskId) {
-        return NextResponse.json(
-          {
-            error:
-              "Chưa có APIFY_FB_TASK_ID trong file .env. Hãy tạo Task trên Apify rồi điền vào .env trước.",
-          },
-          { status: 400 }
-        );
+      if (body.fbMode === "apify") {
+        const token = (process.env.APIFY_TOKEN || "").trim();
+        if (!token) {
+          return NextResponse.json(
+            {
+              error:
+                "Chưa có APIFY_TOKEN trong file .env. Bạn chỉ cần điền APIFY_TOKEN 1 lần, hoặc chuyển sang chế độ Miễn phí ($0).",
+            },
+            { status: 400 }
+          );
+        }
+        const rawTarget = (body.pageUrl || body.feedUrl || body.pageName || "").trim();
+        if (!rawTarget) {
+          return NextResponse.json(
+            { error: "Vui lòng dán link Page Facebook cần cào." },
+            { status: 400 }
+          );
+        }
+        const pageUrl = /^https?:\/\//i.test(rawTarget)
+          ? rawTarget
+          : `https://www.facebook.com/${rawTarget.replace(/^\/+/, "")}`;
+        const limit = Math.max(5, Math.min(50, Number(body.apifyLimit) || 15));
+        const days = Math.max(1, Math.min(90, Number(body.apifyDays) || 14));
+        const nameParam = customTitle ? `&name=${encodeURIComponent(customTitle)}` : "";
+        finalFeedUrl = `http://apify-bridge:8000/apify/facebook.xml?url=${encodeURIComponent(
+          pageUrl
+        )}&limit=${limit}&days=${days}${nameParam}`;
+        if (!customTitle) {
+          const slug = rawTarget
+            .replace(/^https?:\/\/(www\.|m\.|mbasic\.)?facebook\.com\//i, "")
+            .split(/[/?#]/)[0]
+            .trim();
+          customTitle = `${slug || "Page"} (FB Apify)`;
+        }
+      } else {
+        const rawTarget = (body.pageUrl || body.feedUrl || body.pageName || "").trim();
+        if (!rawTarget) {
+          return NextResponse.json(
+            { error: "Vui lòng nhập link hoặc username Page Facebook (vd: https://www.facebook.com/openai)." },
+            { status: 400 }
+          );
+        }
+        const fbKind =
+          body.fbKind === "reels" || body.fbKind === "photos" ? body.fbKind : "page";
+        const nameParam = customTitle ? `&name=${encodeURIComponent(customTitle)}` : "";
+        finalFeedUrl = `http://apify-bridge:8000/facebook.xml?page=${encodeURIComponent(
+          rawTarget
+        )}&mode=${fbKind}${nameParam}`;
+        if (!customTitle) {
+          const slug = rawTarget
+            .replace(/^https?:\/\/(www\.|m\.|mbasic\.)?facebook\.com\//i, "")
+            .split(/[/?#]/)[0]
+            .trim();
+          customTitle = `${slug || "Page"} (Facebook)`;
+        }
       }
-      const matchKey =
-        (body.pageName || "").trim() ||
-        (body.pageUrl || "").trim().replace(/\/+$/, "").split("/").pop() ||
-        "";
-      if (!matchKey) {
-        return NextResponse.json(
-          { error: "Vui lòng nhập tên Page hoặc URL Page Facebook." },
-          { status: 400 }
-        );
-      }
-      finalFeedUrl = `http://apify-bridge:8000/task/${taskId}.xml?match=${encodeURIComponent(
-        matchKey
-      )}`;
-      if (!customTitle) customTitle = matchKey;
     } else if (body.platform === "x") {
       const handle = normalizeXHandle(finalFeedUrl);
       if (!handle) {

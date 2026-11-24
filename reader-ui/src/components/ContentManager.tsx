@@ -8,6 +8,7 @@ import {
   Bookmark,
   Check,
   Database,
+  Download,
   Edit2,
   Eraser,
   ExternalLink,
@@ -28,6 +29,7 @@ import {
   Sun,
   Tag,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { useI18n, type Locale } from "@/lib/i18n";
@@ -672,6 +674,21 @@ export default function ContentManager() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <a
+                    href="/api/sources/export?format=json"
+                    download
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium"
+                  >
+                    <Download className="w-3.5 h-3.5 text-blue-600" />
+                    Export JSON
+                  </a>
+                  <Link
+                    href="/add?section=import"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-emerald-600" />
+                    Import kênh
+                  </Link>
                   <button
                     onClick={() => void handleClearCache()}
                     disabled={cleaning}

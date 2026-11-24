@@ -21,18 +21,22 @@ import {
   Copy,
   Download,
   ExternalLink,
+  Eye,
   FileArchive,
   FileText,
   Filter,
   Folder,
   FolderPlus,
+  Heart,
   Home,
   LogOut,
   Menu,
+  MessageCircle,
   Moon,
   MoreHorizontal,
   Plus,
   RefreshCw,
+  Repeat2,
   Rss,
   Search,
   Settings,
@@ -71,6 +75,40 @@ interface TagSidebarItem {
   unread_count: number;
 }
 
+interface SocialMetrics {
+  platform: string;
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  updated_at: string;
+}
+
+function formatCompactMetric(val: number): string {
+  if (val >= 1_000_000_000) return `${(val / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}B`;
+  if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (val >= 1_000) return `${(val / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
+  return val.toLocaleString("en-US");
+}
+
+function isTrackableSocialEntryUrl(url: string): boolean {
+  const u = (url || "").toLowerCase();
+  if (!u || u.includes("facebook.com") || u.includes("fb.watch")) return false;
+  if (u.includes("tiktok.com") || u.includes("youtube.com") || u.includes("youtu.be/")) {
+    return true;
+  }
+  if (/https?:\/\/(www\.|mobile\.)?(x|twitter|fxtwitter)\.com\/[^/]+\/status\/\d+/i.test(u)) {
+    return true;
+  }
+  if (
+    u.includes("linkedin.com/") &&
+    (u.includes("/posts/") || u.includes("/pulse/") || u.includes("/feed/update/"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 interface EntryListItem {
   id: number;
   feed_id: number;
@@ -82,6 +120,7 @@ interface EntryListItem {
   starred: boolean;
   reading_time: number;
   tags?: string[];
+  social_metrics?: SocialMetrics | null;
   feed: {
     id: number;
     title: string;
@@ -100,6 +139,7 @@ interface EntryDetail extends EntryListItem {
   images: string[];
   videos?: Array<{ url: string; mime_type: string; poster?: string }>;
   youtube_embed_id?: string | null;
+  tiktok_embed_id?: string | null;
 }
 
 type ViewScope =
@@ -171,6 +211,7 @@ export default function ReaderApp({
     input: string;
   } | null>(null);
   const [detailTagInput, setDetailTagInput] = useState("");
+  const [videoFallbackEmbed, setVideoFallbackEmbed] = useState(false);
   const [bulkTagInput, setBulkTagInput] = useState("");
   const [bulkTagOpen, setBulkTagOpen] = useState(false);
   const detailTagInputRef = useRef<HTMLInputElement | null>(null);
@@ -199,6 +240,7 @@ export default function ReaderApp({
   const [activeEntry, setActiveEntry] = useState<EntryDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [fetchingFull, setFetchingFull] = useState(false);
+  const [refreshingMetrics, setRefreshingMetrics] = useState(false);
 
   // Chọn nhiều & xuất hàng loạt
   const [selectMode, setSelectMode] = useState(false);
@@ -304,6 +346,35 @@ export default function ReaderApp({
     }
   }, []);
 
+  const syncMetricsForIds = useCallback(async (entryIds: number[], force = false) => {
+    const clean = Array.from(new Set(entryIds.filter((id) => id > 0))).slice(0, 40);
+    if (clean.length === 0) return;
+    if (force) setRefreshingMetrics(true);
+    try {
+      const res = await fetch("/api/entries/metrics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entry_ids: clean, force }),
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        metrics?: Record<string, SocialMetrics>;
+      };
+      const map = data.metrics || {};
+      if (Object.keys(map).length === 0) return;
+      setEntries((prev) =>
+        prev.map((e) => (map[String(e.id)] ? { ...e, social_metrics: map[String(e.id)] } : e))
+      );
+      setActiveEntry((prev) =>
+        prev && map[String(prev.id)] ? { ...prev, social_metrics: map[String(prev.id)] } : prev
+      );
+    } catch {
+      // ignore background metrics failure
+    } finally {
+      if (force) setRefreshingMetrics(false);
+    }
+  }, []);
+
   const buildFilterQuery = useCallback(
     (offset: number, limit = 20) => {
       const p = new URLSearchParams();
@@ -357,16 +428,23 @@ export default function ReaderApp({
           total: number;
           entries: EntryListItem[];
         };
+        const loadedList = data.entries || [];
         setTotalEntries(data.total || 0);
         if (reset) {
-          setEntries(data.entries || []);
-          setFocusedIndex(data.entries?.length ? 0 : -1);
+          setEntries(loadedList);
+          setFocusedIndex(loadedList.length ? 0 : -1);
         } else {
           setEntries((prev) => {
             const seen = new Set(prev.map((x) => x.id));
-            const appended = (data.entries || []).filter((x) => !seen.has(x.id));
+            const appended = loadedList.filter((x) => !seen.has(x.id));
             return [...prev, ...appended];
           });
+        }
+        const needSyncIds = loadedList
+          .filter((x) => isTrackableSocialEntryUrl(x.url))
+          .map((x) => x.id);
+        if (needSyncIds.length > 0) {
+          void syncMetricsForIds(needSyncIds, false);
         }
       } catch {
         showToast(t("toastLoadEntriesErr"));
@@ -375,7 +453,7 @@ export default function ReaderApp({
         setLoadingMore(false);
       }
     },
-    [buildFilterQuery, entries.length, showToast, t]
+    [buildFilterQuery, entries.length, showToast, syncMetricsForIds, t]
   );
 
   useEffect(() => {
@@ -402,7 +480,10 @@ export default function ReaderApp({
     const u = (active.feed_url || "").toLowerCase();
     return (
       (u.includes("youtube.com") && u.includes("feeds/videos.xml")) ||
-      u.includes("/telegram/channel/")
+      u.includes("/telegram/channel/") ||
+      u.includes("/tiktok/user/") ||
+      u.includes("/facebook.xml") ||
+      u.includes("/facebook/")
     );
   }, [scope, feeds]);
 
@@ -577,12 +658,16 @@ export default function ReaderApp({
   const openEntry = useCallback(
     async (item: EntryListItem, index: number) => {
       setFocusedIndex(index);
+      setVideoFallbackEmbed(false);
       setLoadingDetail(true);
       try {
         const res = await fetch(`/api/entries/${item.id}`, { cache: "no-store" });
         if (!res.ok) throw new Error("err");
         const detail = (await res.json()) as EntryDetail;
         setActiveEntry(detail);
+        if (isTrackableSocialEntryUrl(detail.url) && !detail.social_metrics) {
+          void syncMetricsForIds([detail.id], false);
+        }
         if (item.status === "unread") {
           void markEntriesStatus([item.id], "read");
         }
@@ -592,7 +677,7 @@ export default function ReaderApp({
         setLoadingDetail(false);
       }
     },
-    [markEntriesStatus, showToast, t]
+    [markEntriesStatus, showToast, syncMetricsForIds, t]
   );
 
   const toggleBookmark = useCallback(
@@ -1809,64 +1894,112 @@ export default function ReaderApp({
                       )}
                     </div>
 
-                    {/* Thumbnail (ảnh đầu tiên hoặc enclosure) */}
-                    {item.thumbnail && (
-                      <div className="w-24 h-16 sm:w-28 sm:h-20 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 border border-slate-200/70 dark:border-slate-800">
-                        <img
-                          src={item.thumbnail}
-                          alt=""
-                          loading="lazy"
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-                    )}
-
-                    {/* Tiêu đề, nguồn, trích 2 dòng, thời gian */}
-                    <div className="flex-1 min-w-0 flex flex-col justify-between">
-                      <div>
-                        <h2
-                          className={`text-[15px] leading-snug line-clamp-2 ${
-                            isUnread
-                              ? "font-bold text-slate-900 dark:text-white"
-                              : "font-normal text-slate-500 dark:text-slate-400"
-                          }`}
-                        >
-                          {item.title}
-                        </h2>
-                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                          <span className="font-medium truncate max-w-[200px]">
-                            {item.feed.title}
-                          </span>
-                          {item.feed.category?.title && (
-                            <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px] truncate">
-                              {item.feed.category.title}
-                            </span>
-                          )}
-                          {(item.tags || []).map((tagName) => {
-                            const st = getTagStyle(tagColorMap.get(tagName));
-                            return (
-                              <button
-                                key={tagName}
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  selectScope({ type: "tag", tag: tagName });
-                                }}
-                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-medium hover:opacity-80 ${st.badge}`}
-                              >
-                                <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
-                                {tagName}
-                              </button>
-                            );
-                          })}
-                          <span>· {formatRelTime(item.published_at, t("justNow"), dateLocale)}</span>
-                        </div>
-                        {item.excerpt && (
-                          <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
-                            {item.excerpt}
-                          </p>
+                    {/* Nội dung thẻ: hàng trên (ảnh + tiêu đề/mô tả) & hàng dưới (chỉ số tương tác thẳng hàng mọi thẻ) */}
+                    <div className="flex-1 min-w-0 flex flex-col gap-2">
+                      <div className="flex gap-3.5 items-start">
+                        {/* Thumbnail (ảnh đầu tiên hoặc enclosure) */}
+                        {item.thumbnail && (
+                          <div className="w-24 h-16 sm:w-28 sm:h-20 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 border border-slate-200/70 dark:border-slate-800">
+                            <img
+                              src={item.thumbnail}
+                              alt=""
+                              loading="lazy"
+                              className="w-full h-full object-cover"
+                            />
+                          </div>
                         )}
+
+                        {/* Tiêu đề, nguồn, trích 2 dòng, thời gian */}
+                        <div className="flex-1 min-w-0">
+                          <h2
+                            className={`text-[15px] leading-snug line-clamp-2 ${
+                              isUnread
+                                ? "font-bold text-slate-900 dark:text-white"
+                                : "font-normal text-slate-500 dark:text-slate-400"
+                            }`}
+                          >
+                            {item.title}
+                          </h2>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                            <span className="font-medium truncate max-w-[200px]">
+                              {item.feed.title}
+                            </span>
+                            {item.feed.category?.title && (
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px] truncate">
+                                {item.feed.category.title}
+                              </span>
+                            )}
+                            {(item.tags || []).map((tagName) => {
+                              const st = getTagStyle(tagColorMap.get(tagName));
+                              return (
+                                <button
+                                  key={tagName}
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    selectScope({ type: "tag", tag: tagName });
+                                  }}
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full border text-[10px] font-medium hover:opacity-80 ${st.badge}`}
+                                >
+                                  <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
+                                  {tagName}
+                                </button>
+                              );
+                            })}
+                            <span>· {formatRelTime(item.published_at, t("justNow"), dateLocale)}</span>
+                          </div>
+                          {item.excerpt && (
+                            <p className="mt-1 text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
+                              {item.excerpt}
+                            </p>
+                          )}
+                        </div>
                       </div>
+
+                      {item.social_metrics &&
+                        (item.social_metrics.views !== null ||
+                          item.social_metrics.likes !== null ||
+                          item.social_metrics.comments !== null ||
+                          item.social_metrics.shares !== null) && (
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
+                            {item.social_metrics.views !== null && (
+                              <span
+                                title="Lượt xem"
+                                className="inline-flex items-center gap-1 min-w-[68px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                              >
+                                <Eye className="w-3 h-3 text-sky-600 dark:text-sky-400 shrink-0" />
+                                <span>{formatCompactMetric(item.social_metrics.views)}</span>
+                              </span>
+                            )}
+                            {item.social_metrics.likes !== null && (
+                              <span
+                                title="Lượt thích"
+                                className="inline-flex items-center gap-1 min-w-[58px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                              >
+                                <Heart className="w-3 h-3 text-rose-500 shrink-0" />
+                                <span>{formatCompactMetric(item.social_metrics.likes)}</span>
+                              </span>
+                            )}
+                            {item.social_metrics.comments !== null && (
+                              <span
+                                title="Bình luận"
+                                className="inline-flex items-center gap-1 min-w-[54px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                              >
+                                <MessageCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                <span>{formatCompactMetric(item.social_metrics.comments)}</span>
+                              </span>
+                            )}
+                            {item.social_metrics.shares !== null && (
+                              <span
+                                title="Chia sẻ / Retweet"
+                                className="inline-flex items-center gap-1 min-w-[54px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                              >
+                                <Repeat2 className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                                <span>{formatCompactMetric(item.social_metrics.shares)}</span>
+                              </span>
+                            )}
+                          </div>
+                        )}
                     </div>
 
                     {/* Nút thao tác nhanh trên thẻ */}
@@ -2204,6 +2337,53 @@ export default function ReaderApp({
                       </a>
                     </h1>
 
+                    {isTrackableSocialEntryUrl(activeEntry.url) && (
+                      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+                        {activeEntry.social_metrics?.views !== null &&
+                          activeEntry.social_metrics?.views !== undefined && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200/70 dark:border-sky-900 font-medium">
+                              <Eye className="w-3.5 h-3.5" />
+                              {activeEntry.social_metrics.views.toLocaleString("en-US")} {locale === "en" ? "views" : "lượt xem"}
+                            </span>
+                          )}
+                        {activeEntry.social_metrics?.likes !== null &&
+                          activeEntry.social_metrics?.likes !== undefined && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border border-rose-200/70 dark:border-rose-900 font-medium">
+                              <Heart className="w-3.5 h-3.5" />
+                              {activeEntry.social_metrics.likes.toLocaleString("en-US")} {locale === "en" ? "likes" : "thích"}
+                            </span>
+                          )}
+                        {activeEntry.social_metrics?.comments !== null &&
+                          activeEntry.social_metrics?.comments !== undefined && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-900 font-medium">
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              {activeEntry.social_metrics.comments.toLocaleString("en-US")} {locale === "en" ? "comments" : "bình luận"}
+                            </span>
+                          )}
+                        {activeEntry.social_metrics?.shares !== null &&
+                          activeEntry.social_metrics?.shares !== undefined && (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200/70 dark:border-amber-900 font-medium">
+                              <Repeat2 className="w-3.5 h-3.5" />
+                              {activeEntry.social_metrics.shares.toLocaleString("en-US")} {locale === "en" ? "shares" : "chia sẻ"}
+                            </span>
+                          )}
+                        <button
+                          type="button"
+                          disabled={refreshingMetrics}
+                          onClick={() => void syncMetricsForIds([activeEntry.id], true)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 disabled:opacity-50"
+                          title={
+                            activeEntry.social_metrics?.updated_at
+                              ? `${locale === "en" ? "Updated" : "Cập nhật"}: ${new Date(activeEntry.social_metrics.updated_at).toLocaleString(dateLocale)}`
+                              : undefined
+                          }
+                        >
+                          <RefreshCw className={`w-3 h-3 ${refreshingMetrics ? "animate-spin" : ""}`} />
+                          {locale === "en" ? "Refresh stats" : "Cập nhật tương tác"}
+                        </button>
+                      </div>
+                    )}
+
                     {/* Thanh gắn Tag thủ công cho bài đang đọc */}
                     <div className="mb-6 flex flex-wrap items-center gap-1.5 text-xs">
                       <Tag className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -2275,7 +2455,7 @@ export default function ReaderApp({
                       </div>
                     )}
 
-                    {activeEntry.videos && activeEntry.videos.length > 0 && (
+                    {activeEntry.videos && activeEntry.videos.length > 0 && !videoFallbackEmbed && (
                       <div className="mb-5 space-y-3">
                         {activeEntry.videos.map((v) => (
                           <video
@@ -2285,9 +2465,26 @@ export default function ReaderApp({
                             controls
                             playsInline
                             preload="metadata"
+                            onError={() => {
+                              if (activeEntry.tiktok_embed_id) {
+                                setVideoFallbackEmbed(true);
+                              }
+                            }}
                             className="w-full max-h-[520px] rounded-xl bg-black border border-slate-200 dark:border-slate-800"
                           />
                         ))}
+                      </div>
+                    )}
+
+                    {videoFallbackEmbed && activeEntry.tiktok_embed_id && (
+                      <div className="mb-5 w-full flex justify-center">
+                        <iframe
+                          src={`https://www.tiktok.com/embed/v2/${activeEntry.tiktok_embed_id}`}
+                          title={activeEntry.title}
+                          allow="encrypted-media"
+                          allowFullScreen
+                          className="w-full max-w-[360px] h-[640px] rounded-xl border border-slate-200 dark:border-slate-800 bg-black"
+                        />
                       </div>
                     )}
 

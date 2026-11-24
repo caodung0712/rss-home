@@ -20,6 +20,9 @@ export interface MinifluxFeed {
   disabled: boolean;
   blocklist_rules?: string;
   keeplist_rules?: string;
+  rewrite_rules?: string;
+  scraper_rules?: string;
+  user_agent?: string;
   category: {
     id: number;
     title: string;

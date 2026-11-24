@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import * as cheerio from "cheerio";
 import { getDbPool } from "./db";
+import { upsertSocialMetrics } from "./social-metrics";
 
 function sha256Hex(input: string): string {
   return crypto.createHash("sha256").update(input, "utf8").digest("hex");
@@ -159,10 +160,52 @@ function extractTelegramChannelFromFeedUrl(feedUrl: string): string | null {
   return m ? m[1] : null;
 }
 
+function extractTikTokHandleFromFeedUrl(feedUrl: string): string | null {
+  const m = feedUrl.match(/\/tiktok\/user\/@?([^/?#]+)/i);
+  return m ? decodeURIComponent(m[1]).replace(/^@/, "") : null;
+}
+
+function extractFacebookInfoFromFeedUrl(
+  feedUrl: string
+): { page: string; mode: string } | null {
+  try {
+    const parsed = new URL(feedUrl);
+    if (parsed.pathname === "/facebook.xml") {
+      const page = parsed.searchParams.get("page") || "";
+      const mode = parsed.searchParams.get("mode") || "page";
+      if (page) return { page, mode };
+    }
+    const m = parsed.pathname.match(/\/facebook\/(page|reels|photos)\/([^/?#]+)/i);
+    if (m) {
+      return { mode: m[1].toLowerCase(), page: decodeURIComponent(m[2]) };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function formatDurationSeconds(sec?: number | null): string {
+  if (!sec || !Number.isFinite(sec) || sec <= 0) return "";
+  const total = Math.floor(sec);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function getBridgeBaseUrl(): string {
+  return (process.env.APIFY_BRIDGE_URL || "http://apify-bridge:8000").replace(
+    /\/+$/,
+    ""
+  );
+}
+
 export function isArchivePaginationSupported(feedUrl: string): boolean {
   return Boolean(
     extractYouTubeChannelIdFromFeedUrl(feedUrl) ||
-      extractTelegramChannelFromFeedUrl(feedUrl)
+      extractTelegramChannelFromFeedUrl(feedUrl) ||
+      extractTikTokHandleFromFeedUrl(feedUrl) ||
+      extractFacebookInfoFromFeedUrl(feedUrl)
   );
 }
 
@@ -427,6 +470,201 @@ export async function loadOlderArchiveEntries(
     }
 
     return { supported: true, added, hasMore: hasMore || added > 0 };
+  }
+
+  // 3. Kênh TikTok (phân trang video cũ hơn qua apify-bridge /tiktok/archive bằng yt-dlp)
+  const ttHandle = extractTikTokHandleFromFeedUrl(feed.feed_url);
+  if (ttHandle) {
+    const collected: Array<{
+      id: string;
+      url: string;
+      title: string;
+      description: string;
+      timestamp: number | null;
+      duration: number | null;
+      thumbnail: string;
+      author: string;
+      view_count: number | null;
+      like_count?: number | null;
+      comment_count?: number | null;
+      repost_count?: number | null;
+    }> = [];
+    let startIdx = Math.max(1, existingUrls.size - 4);
+    let apiHasMore = false;
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const chunkCount = batchSize + 15;
+      const archRes = await fetch(
+        `${getBridgeBaseUrl()}/tiktok/archive?handle=${encodeURIComponent(ttHandle)}&start=${startIdx}&count=${chunkCount}`,
+        { cache: "no-store" }
+      );
+      if (!archRes.ok) {
+        if (attempt === 0) {
+          return {
+            supported: true,
+            added: 0,
+            hasMore: false,
+            message: "Không kết nối được nguồn TikTok.",
+          };
+        }
+        break;
+      }
+      const data = (await archRes.json()) as {
+        has_more?: boolean;
+        items?: typeof collected;
+      };
+      const items = data.items || [];
+      apiHasMore = Boolean(data.has_more);
+
+      for (const it of items) {
+        const videoUrl = (it.url || "").trim();
+        const hash = sha256Hex(videoUrl);
+        if (!videoUrl || existingUrls.has(videoUrl) || existingHashes.has(hash)) {
+          continue;
+        }
+        existingUrls.add(videoUrl);
+        collected.push(it);
+        if (collected.length >= batchSize) break;
+      }
+
+      if (collected.length >= batchSize || !apiHasMore || items.length === 0) {
+        break;
+      }
+      startIdx += items.length;
+    }
+
+    let added = 0;
+    let cursorMs = oldestExistingMs - 60_000;
+
+    for (const it of collected) {
+      const hash = sha256Hex(it.url);
+      const rawMs = it.timestamp ? it.timestamp * 1000 : cursorMs;
+      const pubMs = Math.min(rawMs, cursorMs);
+      cursorMs = pubMs - 1000;
+      const pubDate = new Date(pubMs);
+
+      const durText = formatDurationSeconds(it.duration);
+      const safeTitle = (it.title || it.description || `TikTok @${ttHandle}`).replace(
+        /"/g,
+        "&quot;"
+      );
+      const imgHtml = it.thumbnail
+        ? `<p><a href="${it.url}" target="_blank" rel="noopener noreferrer"><img src="${it.thumbnail.replace(/"/g, "&quot;")}" alt="${safeTitle}" /></a></p>`
+        : "";
+      const metaParts = [
+        durText ? `Thời lượng: ${durText}` : "",
+        it.view_count ? `${it.view_count.toLocaleString("en-US")} views` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      const descHtml = it.description ? `<p>${it.description}</p>` : "";
+      const content = `${imgHtml}${descHtml}${
+        metaParts ? `<p>${metaParts}</p>` : ""
+      }<p><a href="${it.url}" target="_blank" rel="noopener noreferrer">Xem trên TikTok</a></p>`;
+
+      const ins = await p.query<{ id: string }>(
+        `INSERT INTO entries (
+          user_id, feed_id, hash, published_at, title, url, author, content, status, starred, reading_time, changed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'unread', false, 1, NOW())
+        ON CONFLICT (feed_id, hash) DO NOTHING
+        RETURNING id`,
+        [
+          feed.user_id,
+          feed.id,
+          hash,
+          pubDate,
+          it.title || it.description || `TikTok @${ttHandle}`,
+          it.url,
+          it.author || feed.title,
+          content,
+        ]
+      );
+      added += ins.rowCount || 0;
+      const insertedId = Number(ins.rows[0]?.id || 0);
+      if (insertedId > 0) {
+        await upsertSocialMetrics([
+          {
+            entry_id: insertedId,
+            platform: "tiktok",
+            views: it.view_count ?? null,
+            likes: it.like_count ?? null,
+            comments: it.comment_count ?? null,
+            shares: it.repost_count ?? null,
+          },
+        ]).catch(() => undefined);
+      }
+    }
+
+    return {
+      supported: true,
+      added,
+      hasMore: apiHasMore || added >= batchSize,
+    };
+  }
+
+  // 4. Trang Facebook miễn phí (mở rộng limit qua RSSHub GraphQL)
+  const fbInfo = extractFacebookInfoFromFeedUrl(feed.feed_url);
+  if (fbInfo) {
+    const targetLimit = Math.min(100, existingUrls.size + batchSize + 10);
+    const archRes = await fetch(
+      `${getBridgeBaseUrl()}/facebook/archive?page=${encodeURIComponent(fbInfo.page)}&mode=${encodeURIComponent(fbInfo.mode)}&limit=${targetLimit}`,
+      { cache: "no-store" }
+    );
+    if (!archRes.ok) {
+      return { supported: true, added: 0, hasMore: false };
+    }
+    const data = (await archRes.json()) as {
+      has_more?: boolean;
+      items?: Array<{
+        url: string;
+        title: string;
+        content_html: string;
+        date_published: string;
+        author: string;
+      }>;
+    };
+
+    let added = 0;
+    let cursorMs = oldestExistingMs - 60_000;
+    for (const it of data.items || []) {
+      const postUrl = (it.url || "").trim();
+      const hash = sha256Hex(postUrl);
+      if (!postUrl || existingUrls.has(postUrl) || existingHashes.has(hash)) {
+        continue;
+      }
+      if (added >= batchSize) break;
+      existingUrls.add(postUrl);
+
+      const parsedMs = it.date_published ? Date.parse(it.date_published) : NaN;
+      const pubMs = Number.isFinite(parsedMs)
+        ? Math.min(parsedMs, cursorMs)
+        : cursorMs;
+      cursorMs = pubMs - 1000;
+
+      const ins = await p.query(
+        `INSERT INTO entries (
+          user_id, feed_id, hash, published_at, title, url, author, content, status, starred, reading_time, changed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'unread', false, 1, NOW())
+        ON CONFLICT (feed_id, hash) DO NOTHING`,
+        [
+          feed.user_id,
+          feed.id,
+          hash,
+          new Date(pubMs),
+          it.title || feed.title,
+          postUrl,
+          it.author || feed.title,
+          it.content_html || `<p><a href="${postUrl}">${postUrl}</a></p>`,
+        ]
+      );
+      added += ins.rowCount || 0;
+    }
+
+    return {
+      supported: true,
+      added,
+      hasMore: Boolean(data.has_more) && targetLimit < 100 && added > 0,
+    };
   }
 
   return { supported: false, added: 0, hasMore: false };

@@ -11,9 +11,12 @@ import { getStorageStats } from "@/lib/storage";
 
 function detectFeedType(feedUrl: string): string {
   const u = feedUrl.toLowerCase();
+  if (u.includes("/web/sitemap.xml") || u.includes("/web/scrape.xml")) return "rss";
   if (u.includes("/linkedin.xml") || u.includes("/linkedin/")) return "linkedin";
   if (u.includes("/tiktok/")) return "tiktok";
-  if (u.includes("apify-bridge")) return "facebook";
+  if (u.includes("/facebook.xml") || u.includes("/facebook/") || u.includes("apify-bridge")) {
+    return "facebook";
+  }
   if (u.includes("/twitter/") || u.includes("fxtwitter.com")) return "x";
   if (u.includes("youtube.com")) return "youtube";
   if (u.includes("news.google.com") || u.includes("google.com/alerts")) return "google";
