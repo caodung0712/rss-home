@@ -30,7 +30,7 @@ export function rewriteMinifluxProxyUrl(raw: string): string | null {
   return null;
 }
 
-function decodeMinifluxProxyOriginalUrl(raw: string): string | null {
+export function decodeMinifluxProxyOriginalUrl(raw: string): string | null {
   try {
     const pathname = raw.startsWith("/proxy/")
       ? raw

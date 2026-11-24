@@ -73,6 +73,12 @@ export interface VideoMediaItem {
   poster?: string;
 }
 
+export function toProxiedVideoUrl(url: string): string {
+  const clean = (url || "").trim();
+  if (!clean || clean.startsWith("/api/")) return clean;
+  return `/api/video-proxy?url=${encodeURIComponent(clean)}`;
+}
+
 export function extractVideoItems(
   html: string,
   enclosures?: MinifluxEntry["enclosures"]
@@ -96,7 +102,7 @@ export function extractVideoItems(
         if (!seen.has(url)) {
           seen.add(url);
           videos.push({
-            url,
+            url: toProxiedVideoUrl(url),
             mime_type: enc.mime_type || "video/mp4",
             poster,
           });
@@ -218,6 +224,11 @@ export function sanitizeArticleHtml(html: string, rewriteImagesToProxy = true): 
         },
       }),
       video: (tagName, attribs) => {
+        const rawSrc = attribs.src || "";
+        const proxiedSrc =
+          rewriteImagesToProxy && isValidMediaUrl(rawSrc)
+            ? toProxiedVideoUrl(rawSrc)
+            : rawSrc;
         const rawPoster = attribs.poster || "";
         const proxiedPoster =
           rewriteImagesToProxy && isValidMediaUrl(rawPoster)
@@ -227,10 +238,25 @@ export function sanitizeArticleHtml(html: string, rewriteImagesToProxy = true): 
           tagName,
           attribs: {
             ...attribs,
+            ...(proxiedSrc ? { src: proxiedSrc } : {}),
             controls: "true",
             playsinline: "true",
             ...(proxiedPoster ? { poster: proxiedPoster } : {}),
             class: "w-full max-h-[540px] rounded-xl bg-black my-3",
+          },
+        };
+      },
+      source: (tagName, attribs) => {
+        const rawSrc = attribs.src || "";
+        const proxiedSrc =
+          rewriteImagesToProxy && isValidMediaUrl(rawSrc)
+            ? toProxiedVideoUrl(rawSrc)
+            : rawSrc;
+        return {
+          tagName,
+          attribs: {
+            ...attribs,
+            ...(proxiedSrc ? { src: proxiedSrc } : {}),
           },
         };
       },
