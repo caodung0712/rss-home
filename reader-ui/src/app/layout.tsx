@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { LanguageProvider, type Locale } from "@/lib/i18n";
 import "./globals.css";
@@ -9,6 +9,17 @@ export const metadata: Metadata = {
   icons: {
     icon: "/favicon.svg",
   },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "RSS Home",
+  },
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default async function RootLayout({

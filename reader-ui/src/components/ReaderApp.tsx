@@ -25,8 +25,10 @@ import {
   FileArchive,
   FileText,
   Filter,
+  Flame,
   Folder,
   FolderPlus,
+  GripVertical,
   Heart,
   Home,
   LogOut,
@@ -144,6 +146,7 @@ interface EntryDetail extends EntryListItem {
 
 type ViewScope =
   | { type: "all" }
+  | { type: "hot" }
   | { type: "starred" }
   | { type: "category"; id: number; title: string; starredOnly?: boolean }
   | { type: "feed"; id: number; title: string; starredOnly?: boolean }
@@ -218,6 +221,8 @@ export default function ReaderApp({
 
   // Bộ lọc danh sách bài
   const [scope, setScope] = useState<ViewScope>({ type: "all" });
+  const [hotWindow, setHotWindow] = useState<"day" | "week">("day");
+  const [syncingHotViews, setSyncingHotViews] = useState(false);
   const [statusFilter, setStatusFilter] = useState<"unread" | "all">("unread");
   const [searchQuery, setSearchQuery] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
@@ -225,6 +230,38 @@ export default function ReaderApp({
   const [beforeDate, setBeforeDate] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [markOnScroll, setMarkOnScroll] = useState(false);
+
+  // Kéo thả sắp xếp folder & feed
+  const [activeDrag, setActiveDrag] = useState<{
+    kind: "category" | "feed";
+    id: number;
+    title: string;
+    sourceCategoryId?: number;
+  } | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    kind: "category" | "feed";
+    id: number;
+    categoryId: number;
+    placement: "before" | "after" | "inside";
+  } | null>(null);
+  const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
+  const dragGhostRef = useRef<HTMLDivElement | null>(null);
+  const suppressClickRef = useRef(false);
+  const hoverExpandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverExpandCatRef = useRef<number | null>(null);
+  const dragCandidateRef = useRef<{
+    kind: "category" | "feed";
+    id: number;
+    title: string;
+    sourceCategoryId?: number;
+    startX: number;
+    startY: number;
+    pointerType: string;
+    activated: boolean;
+    timer: ReturnType<typeof setTimeout> | null;
+  } | null>(null);
+  const dropTargetRef = useRef(dropTarget);
+  dropTargetRef.current = dropTarget;
 
   // Danh sách bài viết
   const [entries, setEntries] = useState<EntryListItem[]>([]);
@@ -384,6 +421,7 @@ export default function ReaderApp({
       if (!isStarredView && statusFilter === "unread") {
         p.set("status", "unread");
       }
+      if (scope.type === "hot") p.set("window", hotWindow);
       if (scope.type === "category") p.set("category_id", String(scope.id));
       if (scope.type === "feed") p.set("feed_id", String(scope.id));
       if (scope.type === "tag") p.set("tag", scope.tag);
@@ -401,7 +439,7 @@ export default function ReaderApp({
       p.set("offset", String(offset));
       return p;
     },
-    [scope, statusFilter, appliedSearch, afterDate, beforeDate]
+    [scope, hotWindow, statusFilter, appliedSearch, afterDate, beforeDate]
   );
 
   const loadEntries = useCallback(
@@ -416,7 +454,11 @@ export default function ReaderApp({
       const offset = reset ? 0 : entries.length;
       try {
         const params = buildFilterQuery(offset, 20);
-        const res = await fetch(`/api/entries?${params.toString()}`, {
+        const endpoint =
+          scope.type === "hot"
+            ? `/api/entries/hot?${params.toString()}`
+            : `/api/entries?${params.toString()}`;
+        const res = await fetch(endpoint, {
           cache: "no-store",
         });
         if (res.status === 401) {
@@ -440,11 +482,13 @@ export default function ReaderApp({
             return [...prev, ...appended];
           });
         }
-        const needSyncIds = loadedList
-          .filter((x) => isTrackableSocialEntryUrl(x.url))
-          .map((x) => x.id);
-        if (needSyncIds.length > 0) {
-          void syncMetricsForIds(needSyncIds, false);
+        if (scope.type !== "hot") {
+          const needSyncIds = loadedList
+            .filter((x) => isTrackableSocialEntryUrl(x.url))
+            .map((x) => x.id);
+          if (needSyncIds.length > 0) {
+            void syncMetricsForIds(needSyncIds, false);
+          }
         }
       } catch {
         showToast(t("toastLoadEntriesErr"));
@@ -453,7 +497,31 @@ export default function ReaderApp({
         setLoadingMore(false);
       }
     },
-    [buildFilterQuery, entries.length, showToast, syncMetricsForIds, t]
+    [buildFilterQuery, entries.length, scope.type, showToast, syncMetricsForIds, t]
+  );
+
+  const syncHotViews = useCallback(
+    async (force = false) => {
+      if (syncingHotViews) return;
+      setSyncingHotViews(true);
+      try {
+        const res = await fetch("/api/entries/hot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ window: hotWindow, force }),
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { synced?: number };
+        if ((data.synced || 0) > 0 || force) {
+          await loadEntries(true);
+        }
+      } catch {
+        // ignore background hot metrics sync error
+      } finally {
+        setSyncingHotViews(false);
+      }
+    },
+    [hotWindow, loadEntries, syncingHotViews]
   );
 
   useEffect(() => {
@@ -470,8 +538,11 @@ export default function ReaderApp({
   useEffect(() => {
     setArchiveExhausted(false);
     void loadEntries(true);
+    if (scope.type === "hot") {
+      void syncHotViews(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, statusFilter, appliedSearch, afterDate, beforeDate]);
+  }, [scope, hotWindow, statusFilter, appliedSearch, afterDate, beforeDate]);
 
   const activeFeedSupportsArchive = useMemo(() => {
     if (scope.type !== "feed") return false;
@@ -719,6 +790,7 @@ export default function ReaderApp({
   const handleMarkAllRead = useCallback(
     async (olderThanDays?: number) => {
       setMarkMenuOpen(false);
+      if (scope.type === "starred" || scope.type === "hot") return;
       const payload: {
         scope: "all" | "category" | "feed" | "tag";
         id?: number;
@@ -774,7 +846,10 @@ export default function ReaderApp({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      if (scope.type === "feed") {
+      if (scope.type === "hot") {
+        await syncHotViews(true);
+        showToast(t("hotRefreshViews"));
+      } else if (scope.type === "feed") {
         await Promise.all([loadSidebar(), loadEntries(true)]);
         showToast(t("toastRefreshedFeed", { title: scope.title }));
       } else {
@@ -1017,6 +1092,7 @@ export default function ReaderApp({
 
   const currentHeading = useMemo(() => {
     if (scope.type === "all") return t("newsfeed");
+    if (scope.type === "hot") return t("hotNews");
     if (scope.type === "starred") return t("saved");
     if (scope.type === "tag") return `# ${scope.tag}`;
     if ((scope.type === "feed" || scope.type === "category") && scope.starredOnly) {
@@ -1113,6 +1189,349 @@ export default function ReaderApp({
     window.location.href = "/login";
   };
 
+  const commitSidebarDrop = useCallback(
+    async (
+      dragged: {
+        kind: "category" | "feed";
+        id: number;
+        title: string;
+        sourceCategoryId?: number;
+      },
+      target: {
+        kind: "category" | "feed";
+        id: number;
+        categoryId: number;
+        placement: "before" | "after" | "inside";
+      }
+    ) => {
+      if (dragged.kind === "category") {
+        if (dragged.id === target.categoryId) return;
+        const prevCategories = categories;
+        const moving = prevCategories.find((c) => c.id === dragged.id);
+        if (!moving) return;
+
+        const remaining = prevCategories.filter((c) => c.id !== dragged.id);
+        const targetIdx = remaining.findIndex((c) => c.id === target.categoryId);
+        if (targetIdx === -1) return;
+        const insertIdx = target.placement === "after" ? targetIdx + 1 : targetIdx;
+        const nextCategories = [
+          ...remaining.slice(0, insertIdx),
+          moving,
+          ...remaining.slice(insertIdx),
+        ];
+
+        setCategories(nextCategories);
+        try {
+          const res = await fetch("/api/sidebar/order", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              categoryIds: nextCategories.map((c) => c.id),
+            }),
+          });
+          if (!res.ok) throw new Error("err");
+          showToast(t("toastReorderedSidebar"));
+        } catch {
+          setCategories(prevCategories);
+          showToast(t("toastErrReorderSidebar"));
+        }
+        return;
+      }
+
+      // Kéo thả Feed (đổi thứ tự trong cùng folder hoặc chuyển sang folder khác)
+      const prevFeeds = feeds;
+      const movingFeed = prevFeeds.find((f) => f.id === dragged.id);
+      if (!movingFeed) return;
+
+      const targetCatId = target.categoryId;
+      const targetCat = categories.find((c) => c.id === targetCatId);
+      if (!targetCat) return;
+
+      const movedFolder = (movingFeed.category?.id || 0) !== targetCatId;
+      if (target.kind === "feed" && target.id === dragged.id) return;
+
+      const updatedMovingFeed: FeedItem = movedFolder
+        ? { ...movingFeed, category: { id: targetCat.id, title: targetCat.title } }
+        : movingFeed;
+
+      // Xây lại danh sách feeds theo thứ tự từng thư mục để giữ vị trí đồng nhất
+      const grouped = new Map<number, FeedItem[]>();
+      for (const c of categories) grouped.set(c.id, []);
+      for (const f of prevFeeds) {
+        if (f.id === dragged.id) continue;
+        const cid = f.category?.id || 0;
+        const list = grouped.get(cid) || [];
+        list.push(f);
+        grouped.set(cid, list);
+      }
+
+      const destList = grouped.get(targetCatId) || [];
+      if (target.kind === "feed") {
+        const idx = destList.findIndex((f) => f.id === target.id);
+        if (idx === -1) {
+          destList.push(updatedMovingFeed);
+        } else {
+          const insertIdx = target.placement === "after" ? idx + 1 : idx;
+          destList.splice(insertIdx, 0, updatedMovingFeed);
+        }
+      } else {
+        destList.push(updatedMovingFeed);
+      }
+      grouped.set(targetCatId, destList);
+
+      const nextFeeds: FeedItem[] = [];
+      for (const c of categories) {
+        const arr = grouped.get(c.id);
+        if (arr) nextFeeds.push(...arr);
+      }
+      // Giữ các feed không thuộc category nào (nếu có)
+      for (const [cid, arr] of grouped.entries()) {
+        if (!categories.some((c) => c.id === cid)) {
+          nextFeeds.push(...arr);
+        }
+      }
+
+      setFeeds(nextFeeds);
+      if (movedFolder) {
+        setExpandedFolders((prev) => ({ ...prev, [targetCatId]: true }));
+      }
+
+      try {
+        const res = await fetch("/api/sidebar/order", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            feedMove: movedFolder
+              ? { feedId: movingFeed.id, targetCategoryId: targetCatId }
+              : undefined,
+            feedIds: nextFeeds.map((f) => f.id),
+          }),
+        });
+        if (!res.ok) throw new Error("err");
+        showToast(
+          movedFolder
+            ? t("toastMovedFeed", { title: movingFeed.title })
+            : t("toastReorderedSidebar")
+        );
+      } catch {
+        setFeeds(prevFeeds);
+        showToast(
+          movedFolder ? t("toastErrMoveFeed") : t("toastErrReorderSidebar")
+        );
+      }
+    },
+    [categories, feeds, showToast, t]
+  );
+
+  const startSidebarDragCandidate = useCallback(
+    (
+      e: React.PointerEvent<HTMLElement>,
+      item: {
+        kind: "category" | "feed";
+        id: number;
+        title: string;
+        sourceCategoryId?: number;
+      }
+    ) => {
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl?.closest("[data-no-dnd='true']")) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (e.pointerType !== "mouse" && !targetEl?.closest("[data-dnd-handle='true']")) {
+        return;
+      }
+      if (e.pointerType !== "mouse") {
+        e.preventDefault();
+      }
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let activated = false;
+
+      dragCandidateRef.current = {
+        ...item,
+        startX,
+        startY,
+        pointerType: e.pointerType,
+        activated: false,
+        timer: null,
+      };
+
+      const clearHoverExpand = () => {
+        if (hoverExpandTimerRef.current) {
+          clearTimeout(hoverExpandTimerRef.current);
+          hoverExpandTimerRef.current = null;
+        }
+        hoverExpandCatRef.current = null;
+      };
+
+      const updateGhostPos = (x: number, y: number) => {
+        if (dragGhostRef.current) {
+          dragGhostRef.current.style.transform = `translate3d(${x + 14}px, ${y + 12}px, 0)`;
+        }
+      };
+
+      const onPointerMove = (ev: PointerEvent) => {
+        const cand = dragCandidateRef.current;
+        if (!cand) return;
+
+        if (!activated) {
+          const dist = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+          if (dist < 5) return;
+          activated = true;
+          cand.activated = true;
+          document.body.style.cursor = "grabbing";
+          setActiveDrag({
+            kind: cand.kind,
+            id: cand.id,
+            title: cand.title,
+            sourceCategoryId: cand.sourceCategoryId,
+          });
+          requestAnimationFrame(() => updateGhostPos(ev.clientX, ev.clientY));
+        } else {
+          updateGhostPos(ev.clientX, ev.clientY);
+        }
+
+        // Tự cuộn vùng danh sách sidebar khi kéo gần mép trên/dưới
+        const scrollEl = sidebarScrollRef.current;
+        if (scrollEl) {
+          const sr = scrollEl.getBoundingClientRect();
+          if (ev.clientY < sr.top + 42) {
+            scrollEl.scrollTop -= 8;
+          } else if (ev.clientY > sr.bottom - 42) {
+            scrollEl.scrollTop += 8;
+          }
+        }
+
+        const els = document.elementsFromPoint(ev.clientX, ev.clientY);
+        let nextTarget: {
+          kind: "category" | "feed";
+          id: number;
+          categoryId: number;
+          placement: "before" | "after" | "inside";
+        } | null = null;
+
+        if (cand.kind === "category") {
+          for (const el of els) {
+            const block = (el as HTMLElement).closest?.("[data-dnd-folder-block]") as HTMLElement | null;
+            if (!block) continue;
+            const folderId = Number(block.dataset.dndFolderBlock);
+            if (!folderId || folderId === cand.id) break;
+            const rect = block.getBoundingClientRect();
+            const threshold = rect.top + Math.min(rect.height / 2, 32);
+            const placement = ev.clientY < threshold ? "before" : "after";
+            nextTarget = {
+              kind: "category",
+              id: folderId,
+              categoryId: folderId,
+              placement,
+            };
+            break;
+          }
+          clearHoverExpand();
+        } else {
+          let foundFeed = false;
+          for (const el of els) {
+            const feedEl = (el as HTMLElement).closest?.("[data-dnd-feed-id]") as HTMLElement | null;
+            if (feedEl) {
+              const feedId = Number(feedEl.dataset.dndFeedId);
+              const feedCatId = Number(feedEl.dataset.dndFeedCat);
+              if (feedId && feedId !== cand.id && feedCatId) {
+                const rect = feedEl.getBoundingClientRect();
+                const placement = ev.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                nextTarget = {
+                  kind: "feed",
+                  id: feedId,
+                  categoryId: feedCatId,
+                  placement,
+                };
+              }
+              foundFeed = true;
+              clearHoverExpand();
+              break;
+            }
+          }
+
+          if (!foundFeed) {
+            for (const el of els) {
+              const headerEl = (el as HTMLElement).closest?.("[data-dnd-folder-header]") as HTMLElement | null;
+              const blockEl = (el as HTMLElement).closest?.("[data-dnd-folder-block]") as HTMLElement | null;
+              const folderEl = headerEl || blockEl;
+              if (!folderEl) continue;
+              const folderId = Number(
+                folderEl.dataset.dndFolderHeader || folderEl.dataset.dndFolderBlock
+              );
+              if (!folderId) continue;
+              nextTarget = {
+                kind: "category",
+                id: folderId,
+                categoryId: folderId,
+                placement: "inside",
+              };
+              if (hoverExpandCatRef.current !== folderId) {
+                clearHoverExpand();
+                hoverExpandCatRef.current = folderId;
+                hoverExpandTimerRef.current = setTimeout(() => {
+                  setExpandedFolders((prev) =>
+                    prev[folderId] ? prev : { ...prev, [folderId]: true }
+                  );
+                }, 420);
+              }
+              break;
+            }
+            if (!nextTarget) clearHoverExpand();
+          }
+        }
+
+        const prevT = dropTargetRef.current;
+        if (
+          prevT?.kind !== nextTarget?.kind ||
+          prevT?.id !== nextTarget?.id ||
+          prevT?.categoryId !== nextTarget?.categoryId ||
+          prevT?.placement !== nextTarget?.placement
+        ) {
+          setDropTarget(nextTarget);
+        }
+      };
+
+      const onPointerEnd = () => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerEnd);
+        window.removeEventListener("pointercancel", onPointerEnd);
+        clearHoverExpand();
+        document.body.style.cursor = "";
+
+        const cand = dragCandidateRef.current;
+        const finalTarget = dropTargetRef.current;
+        dragCandidateRef.current = null;
+        setActiveDrag(null);
+        setDropTarget(null);
+
+        if (cand?.activated) {
+          suppressClickRef.current = true;
+          setTimeout(() => {
+            suppressClickRef.current = false;
+          }, 80);
+          if (finalTarget) {
+            void commitSidebarDrop(
+              {
+                kind: cand.kind,
+                id: cand.id,
+                title: cand.title,
+                sourceCategoryId: cand.sourceCategoryId,
+              },
+              finalTarget
+            );
+          }
+        }
+      };
+
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerEnd);
+      window.addEventListener("pointercancel", onPointerEnd);
+    },
+    [commitSidebarDrop]
+  );
+
   const sidebarContent = (
     <div className="flex flex-col h-full select-none">
       <div className="h-12 px-3 flex items-center justify-between border-b border-slate-200 dark:border-slate-800">
@@ -1167,10 +1586,13 @@ export default function ReaderApp({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5 text-sm">
+      <div
+        ref={sidebarScrollRef}
+        className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5 text-sm"
+      >
         <button
           onClick={() => selectScope({ type: "all" })}
-          className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg transition-colors ${
+          className={`w-full flex items-center justify-between px-2.5 py-2 md:py-1.5 rounded-lg transition-colors ${
             scope.type === "all"
               ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
               : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70"
@@ -1188,8 +1610,26 @@ export default function ReaderApp({
         </button>
 
         <button
+          onClick={() => selectScope({ type: "hot" })}
+          className={`w-full flex items-center justify-between px-2.5 py-2 md:py-1.5 rounded-lg transition-colors ${
+            scope.type === "hot"
+              ? "bg-orange-50 text-orange-700 dark:bg-orange-950/60 dark:text-orange-300 font-semibold"
+              : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70"
+          }`}
+        >
+          <span className="flex items-center gap-2 truncate">
+            <Flame
+              className={`w-4 h-4 shrink-0 ${
+                scope.type === "hot" ? "text-orange-500" : "text-orange-500/80"
+              }`}
+            />
+            {t("hotNews")}
+          </span>
+        </button>
+
+        <button
           onClick={() => selectScope({ type: "starred" })}
-          className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg transition-colors ${
+          className={`w-full flex items-center justify-between px-2.5 py-2 md:py-1.5 rounded-lg transition-colors ${
             scope.type === "starred"
               ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
               : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70"
@@ -1214,18 +1654,58 @@ export default function ReaderApp({
           const catFeeds = feedsByCategory.get(cat.id) || [];
           const catUnread = catFeeds.reduce((sum, f) => sum + (f.unread_count || 0), 0);
           const expanded = expandedFolders[cat.id] ?? true;
+          const isDraggingCat =
+            activeDrag?.kind === "category" && activeDrag.id === cat.id;
+          const showCatBefore =
+            dropTarget?.kind === "category" &&
+            dropTarget.categoryId === cat.id &&
+            dropTarget.placement === "before";
+          const showCatAfter =
+            dropTarget?.kind === "category" &&
+            dropTarget.categoryId === cat.id &&
+            dropTarget.placement === "after";
+          const showCatInside =
+            dropTarget?.kind === "category" &&
+            dropTarget.categoryId === cat.id &&
+            dropTarget.placement === "inside";
 
           return (
-            <div key={cat.id} className="space-y-0.5">
+            <div
+              key={cat.id}
+              data-dnd-folder-block={cat.id}
+              className={`space-y-0.5 relative transition-opacity ${
+                isDraggingCat ? "opacity-40" : ""
+              }`}
+            >
+              {showCatBefore && (
+                <div className="h-0.5 bg-green-500 rounded-full mx-1 pointer-events-none" />
+              )}
               <div
-                className={`flex items-center justify-between px-1.5 py-1.5 rounded-lg cursor-pointer transition-colors ${
-                  scope.type === "category" && scope.id === cat.id
-                    ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
-                    : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70"
+                data-dnd-folder-header={cat.id}
+                onPointerDown={(e) =>
+                  startSidebarDragCandidate(e, {
+                    kind: "category",
+                    id: cat.id,
+                    title: cat.title,
+                  })
+                }
+                className={`group/folder flex items-center justify-between px-1.5 py-2 md:py-1.5 rounded-lg cursor-pointer transition-colors ${
+                  showCatInside
+                    ? "ring-2 ring-green-500 bg-green-50/90 dark:bg-green-950/60"
+                    : scope.type === "category" && scope.id === cat.id
+                      ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
+                      : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70"
                 }`}
               >
                 <div className="flex items-center gap-1 min-w-0 flex-1">
+                  <span
+                    data-dnd-handle="true"
+                    className="touch-none p-0.5 text-slate-300 dark:text-slate-600 md:opacity-0 md:group-hover/folder:opacity-100 cursor-grab active:cursor-grabbing shrink-0"
+                  >
+                    <GripVertical className="w-3.5 h-3.5" />
+                  </span>
                   <button
+                    data-no-dnd="true"
                     onClick={(e) => {
                       e.stopPropagation();
                       setExpandedFolders((prev) => ({
@@ -1242,9 +1722,10 @@ export default function ReaderApp({
                     )}
                   </button>
                   <button
-                    onClick={() =>
-                      selectScope({ type: "category", id: cat.id, title: cat.title })
-                    }
+                    onClick={() => {
+                      if (suppressClickRef.current) return;
+                      selectScope({ type: "category", id: cat.id, title: cat.title });
+                    }}
                     className="flex items-center gap-1.5 min-w-0 flex-1 text-left"
                   >
                     <Folder className="w-3.5 h-3.5 text-slate-400 shrink-0" />
@@ -1260,60 +1741,103 @@ export default function ReaderApp({
 
               {expanded && (
                 <div className="pl-5 space-y-0.5">
-                  {catFeeds.map((f) => (
-                    <div
-                      key={f.id}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setFeedMenu({
-                          feed: f,
-                          x: Math.min(e.clientX, window.innerWidth - 240),
-                          y: Math.min(e.clientY, window.innerHeight - 360),
-                        });
-                      }}
-                      className={`group/feed flex items-center justify-between px-2 py-1 rounded-md text-[13px] transition-colors ${
-                        scope.type === "feed" && scope.id === f.id
-                          ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
-                          : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300"
-                      }`}
-                    >
-                      <button
-                        onClick={() =>
-                          selectScope({ type: "feed", id: f.id, title: f.title })
-                        }
-                        className="flex items-center gap-2 min-w-0 flex-1 text-left"
-                      >
-                        <FeedIcon feedId={f.id} />
-                        <span className="truncate">{f.title}</span>
-                      </button>
-                      <div className="flex items-center gap-1 pl-1 shrink-0">
-                        <button
-                          onClick={(e) => {
+                  {catFeeds.map((f) => {
+                    const isDraggingFeed =
+                      activeDrag?.kind === "feed" && activeDrag.id === f.id;
+                    const showFeedBefore =
+                      dropTarget?.kind === "feed" &&
+                      dropTarget.id === f.id &&
+                      dropTarget.placement === "before";
+                    const showFeedAfter =
+                      dropTarget?.kind === "feed" &&
+                      dropTarget.id === f.id &&
+                      dropTarget.placement === "after";
+
+                    return (
+                      <div key={f.id} className="relative">
+                        {showFeedBefore && (
+                          <div className="h-0.5 bg-green-500 rounded-full mx-1 pointer-events-none" />
+                        )}
+                        <div
+                          data-dnd-feed-id={f.id}
+                          data-dnd-feed-cat={cat.id}
+                          onPointerDown={(e) =>
+                            startSidebarDragCandidate(e, {
+                              kind: "feed",
+                              id: f.id,
+                              title: f.title,
+                              sourceCategoryId: cat.id,
+                            })
+                          }
+                          onContextMenu={(e) => {
+                            e.preventDefault();
                             e.stopPropagation();
-                            const rect = (
-                              e.currentTarget as HTMLElement
-                            ).getBoundingClientRect();
                             setFeedMenu({
                               feed: f,
-                              x: Math.min(rect.right + 4, window.innerWidth - 240),
-                              y: Math.min(rect.top, window.innerHeight - 360),
+                              x: Math.min(e.clientX, window.innerWidth - 240),
+                              y: Math.min(e.clientY, window.innerHeight - 360),
                             });
                           }}
-                          title="Tuỳ chọn feed"
-                          className="opacity-0 group-hover/feed:opacity-100 p-0.5 rounded hover:bg-slate-300/60 dark:hover:bg-slate-700 text-slate-400"
+                          className={`group/feed flex items-center justify-between px-1.5 py-1.5 md:py-1 rounded-md text-[13px] transition-colors cursor-pointer ${
+                            isDraggingFeed ? "opacity-40" : ""
+                          } ${
+                            scope.type === "feed" && scope.id === f.id
+                              ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
+                              : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300"
+                          }`}
                         >
-                          <MoreHorizontal className="w-3.5 h-3.5" />
-                        </button>
-                        {f.unread_count > 0 && (
-                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                            {formatBadge(f.unread_count)}
-                          </span>
+                          <button
+                            onClick={() => {
+                              if (suppressClickRef.current) return;
+                              selectScope({ type: "feed", id: f.id, title: f.title });
+                            }}
+                            className="flex items-center gap-1.5 min-w-0 flex-1 text-left"
+                          >
+                            <span
+                              data-dnd-handle="true"
+                              className="touch-none text-slate-300 dark:text-slate-600 md:opacity-0 md:group-hover/feed:opacity-100 cursor-grab active:cursor-grabbing shrink-0"
+                            >
+                              <GripVertical className="w-3 h-3" />
+                            </span>
+                            <FeedIcon feedId={f.id} />
+                            <span className="truncate">{f.title}</span>
+                          </button>
+                          <div className="flex items-center gap-1 pl-1 shrink-0">
+                            <button
+                              data-no-dnd="true"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const rect = (
+                                  e.currentTarget as HTMLElement
+                                ).getBoundingClientRect();
+                                setFeedMenu({
+                                  feed: f,
+                                  x: Math.min(rect.right + 4, window.innerWidth - 240),
+                                  y: Math.min(rect.top, window.innerHeight - 360),
+                                });
+                              }}
+                              title="Tuỳ chọn feed"
+                              className="md:opacity-0 md:group-hover/feed:opacity-100 p-1 md:p-0.5 rounded hover:bg-slate-300/60 dark:hover:bg-slate-700 text-slate-400"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
+                            </button>
+                            {f.unread_count > 0 && (
+                              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                                {formatBadge(f.unread_count)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        {showFeedAfter && (
+                          <div className="h-0.5 bg-green-500 rounded-full mx-1 pointer-events-none" />
                         )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
+              )}
+              {showCatAfter && (
+                <div className="h-0.5 bg-green-500 rounded-full mx-1 pointer-events-none" />
               )}
             </div>
           );
@@ -1364,7 +1888,7 @@ export default function ReaderApp({
                   <button
                     key={tg.name}
                     onClick={() => selectScope({ type: "tag", tag: tg.name })}
-                    className={`w-full flex items-center justify-between px-2.5 py-1 rounded-lg text-[13px] transition-colors ${
+                    className={`w-full flex items-center justify-between px-2.5 py-1.5 md:py-1 rounded-lg text-[13px] transition-colors ${
                       activeTag
                         ? "bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-semibold"
                         : "hover:bg-slate-200/60 dark:hover:bg-slate-800/70 text-slate-700 dark:text-slate-300"
@@ -1388,11 +1912,41 @@ export default function ReaderApp({
           </div>
         )}
       </div>
+
+      {/* Footer tiện ích trên Mobile Drawer */}
+      <div className="md:hidden border-t border-slate-200 dark:border-slate-800 px-3 py-2 flex items-center justify-between gap-2 bg-slate-50/80 dark:bg-slate-900/80">
+        <Link
+          href="/status"
+          onClick={() => setMobileMenuOpen(false)}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800"
+        >
+          <Activity className="w-4 h-4" />
+          <span>{t("systemStatus")}</span>
+        </Link>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={toggleTheme}
+            title={t("darkMode")}
+            className="p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800"
+          >
+            {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+          {passwordEnabled && (
+            <button
+              onClick={() => void handleLogout()}
+              title={t("logout")}
+              className="p-2 rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-800"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+    <div className="h-[100dvh] w-full overflow-hidden flex bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       {/* Thanh icon ngoài cùng bên trái (giống Inoreader) */}
       <aside className="hidden md:flex flex-col items-center justify-between w-12 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 py-2">
         <div className="flex flex-col items-center gap-2">
@@ -1413,6 +1967,17 @@ export default function ReaderApp({
             }`}
           >
             <Home className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => selectScope({ type: "hot" })}
+            title={t("hotNews")}
+            className={`p-2 rounded-lg ${
+              scope.type === "hot"
+                ? "bg-orange-500 text-white"
+                : "hover:bg-slate-200 dark:hover:bg-slate-800 text-orange-500"
+            }`}
+          >
+            <Flame className="w-4 h-4" />
           </button>
           <button
             onClick={() => selectScope({ type: "starred" })}
@@ -1488,11 +2053,11 @@ export default function ReaderApp({
       {/* Drawer Sidebar trên Mobile */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 md:hidden flex">
-          <div className="w-72 max-w-[85vw] bg-white dark:bg-slate-900 h-full shadow-2xl border-r border-slate-200 dark:border-slate-800">
+          <div className="w-[84vw] max-w-[330px] bg-white dark:bg-slate-900 h-full shadow-2xl border-r border-slate-200 dark:border-slate-800 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
             {sidebarContent}
           </div>
           <div
-            className="flex-1 bg-black/40"
+            className="flex-1 bg-black/45 backdrop-blur-[1px]"
             onClick={() => setMobileMenuOpen(false)}
           />
         </div>
@@ -1501,170 +2066,193 @@ export default function ReaderApp({
       {/* Vùng nội dung chính */}
       <main className="flex-1 flex flex-col min-w-0 relative">
         {/* Thanh công cụ trên cùng */}
-        <header className="h-12 px-3 md:px-5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 bg-white dark:bg-slate-950 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <button
-              onClick={() => setMobileMenuOpen(true)}
-              className="md:hidden p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-            <h1 className="font-bold text-base truncate">{currentHeading}</h1>
-            <span className="hidden sm:inline text-xs text-slate-400">
-              ({totalEntries})
-            </span>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            {/* Đánh dấu đã đọc + menu cũ hơn 1 ngày / 1 tuần */}
-            {scope.type !== "starred" && (
-              <div className="relative flex items-center">
-                <button
-                  onClick={() => void handleMarkAllRead()}
-                  title={t("markAllReadTitle")}
-                  className="inline-flex items-center gap-1 px-2 py-1.5 rounded-l-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium"
-                >
-                  <CheckCheck className="w-3.5 h-3.5 text-green-600" />
-                  <span className="hidden lg:inline">{t("markAllRead")}</span>
-                </button>
-                <button
-                  onClick={() => setMarkMenuOpen((v) => !v)}
-                  className="px-1.5 py-1.5 rounded-r-lg border-y border-r border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs"
-                >
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </button>
-                {markMenuOpen && (
-                  <div className="absolute right-0 top-full mt-1 w-44 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-lg py-1 z-30 text-xs">
-                    <button
-                      onClick={() => void handleMarkAllRead()}
-                      className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
-                    >
-                      {t("markAllAsReadMenu")}
-                    </button>
-                    <button
-                      onClick={() => void handleMarkAllRead(1)}
-                      className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
-                    >
-                      {t("olderThan1Day")}
-                    </button>
-                    <button
-                      onClick={() => void handleMarkAllRead(7)}
-                      className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
-                    >
-                      {t("olderThan1Week")}
-                    </button>
-                  </div>
+        <header className="pt-[env(safe-area-inset-top)] border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shrink-0">
+          <div className="h-12 px-2.5 sm:px-3 md:px-5 flex items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <button
+                onClick={() => setMobileMenuOpen(true)}
+                aria-label="Mở menu"
+                className="md:hidden min-w-[38px] min-h-[38px] inline-flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95 transition"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+              <h1 className="font-bold text-[15px] sm:text-base truncate flex items-center gap-1.5">
+                {scope.type === "hot" && (
+                  <Flame className="w-4 h-4 text-orange-500 shrink-0" />
                 )}
-              </div>
-            )}
+                <span className="truncate">{currentHeading}</span>
+              </h1>
+              <span className="text-[11px] sm:text-xs text-slate-400 shrink-0">
+                ({totalEntries})
+              </span>
+            </div>
 
-            {/* Unread / All */}
-            {scope.type !== "starred" &&
-              !((scope.type === "feed" || scope.type === "category") && scope.starredOnly) && (
-              <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5 text-xs">
-                <button
-                  onClick={() => setStatusFilter("unread")}
-                  className={`px-2 py-1 rounded-md transition-colors ${
-                    statusFilter === "unread"
-                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-medium"
-                      : "text-slate-600 dark:text-slate-400"
-                  }`}
-                >
-                  {t("unread")}
-                </button>
-                <button
-                  onClick={() => setStatusFilter("all")}
-                  className={`px-2 py-1 rounded-md transition-colors ${
-                    statusFilter === "all"
-                      ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-medium"
-                      : "text-slate-600 dark:text-slate-400"
-                  }`}
-                >
-                  {t("all")}
-                </button>
-              </div>
-            )}
+            <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+              {/* Đánh dấu đã đọc + menu cũ hơn 1 ngày / 1 tuần */}
+              {scope.type !== "starred" && scope.type !== "hot" && (
+                <div className="relative flex items-center">
+                  <button
+                    onClick={() => void handleMarkAllRead()}
+                    title={t("markAllReadTitle")}
+                    className="inline-flex items-center gap-1 px-2 py-1.5 min-h-[34px] rounded-l-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium"
+                  >
+                    <CheckCheck className="w-3.5 h-3.5 text-green-600" />
+                    <span className="hidden lg:inline">{t("markAllRead")}</span>
+                  </button>
+                  <button
+                    onClick={() => setMarkMenuOpen((v) => !v)}
+                    className="px-1.5 py-1.5 min-h-[34px] rounded-r-lg border-y border-r border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                  {markMenuOpen && (
+                    <div className="absolute right-0 top-full mt-1 w-44 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-lg py-1 z-30 text-xs">
+                      <button
+                        onClick={() => void handleMarkAllRead()}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        {t("markAllAsReadMenu")}
+                      </button>
+                      <button
+                        onClick={() => void handleMarkAllRead(1)}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        {t("olderThan1Day")}
+                      </button>
+                      <button
+                        onClick={() => void handleMarkAllRead(7)}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        {t("olderThan1Week")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
-            {/* Đọc khi cuộn */}
-            <button
-              onClick={() => setMarkOnScroll((v) => !v)}
-              title={t("markOnScrollTitle")}
-              className={`hidden sm:inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs ${
-                markOnScroll
-                  ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300"
-                  : "border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400"
-              }`}
-            >
-              {t("markOnScroll")}
-            </button>
+              {/* Unread / All */}
+              {scope.type !== "starred" &&
+                !((scope.type === "feed" || scope.type === "category") && scope.starredOnly) && (
+                <div className="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 p-0.5 text-[11px] sm:text-xs">
+                  <button
+                    onClick={() => setStatusFilter("unread")}
+                    className={`px-2 py-1 rounded-md transition-colors ${
+                      statusFilter === "unread"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-medium"
+                        : "text-slate-600 dark:text-slate-400"
+                    }`}
+                  >
+                    {t("unread")}
+                  </button>
+                  <button
+                    onClick={() => setStatusFilter("all")}
+                    className={`px-2 py-1 rounded-md transition-colors ${
+                      statusFilter === "all"
+                        ? "bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 font-medium"
+                        : "text-slate-600 dark:text-slate-400"
+                    }`}
+                  >
+                    {t("all")}
+                  </button>
+                </div>
+              )}
 
-            {/* Chọn nhiều */}
-            <button
-              onClick={() => {
-                const next = !selectMode;
-                setSelectMode(next);
-                if (!next) {
-                  setSelectedIds(new Set());
-                  setSelectAllByFilter(false);
-                  setBulkTagOpen(false);
-                }
-              }}
-              title={t("selectTitle")}
-              className={`inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs ${
-                selectMode
-                  ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-medium"
-                  : "border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
-              }`}
-            >
-              <CheckSquare className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{t("select")}</span>
-            </button>
+              {/* Đọc khi cuộn */}
+              <button
+                onClick={() => setMarkOnScroll((v) => !v)}
+                title={t("markOnScrollTitle")}
+                className={`hidden sm:inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border text-xs ${
+                  markOnScroll
+                    ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300"
+                    : "border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400"
+                }`}
+              >
+                {t("markOnScroll")}
+              </button>
 
-            {/* Tìm kiếm */}
-            <button
-              onClick={() => setShowFilters((v) => !v)}
-              title={t("searchFilterTitle")}
-              className={`p-1.5 rounded-lg border ${
-                showFilters || appliedSearch || afterDate || beforeDate
-                  ? "border-green-500 text-green-600"
-                  : "border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
-              }`}
-            >
-              <Search className="w-4 h-4" />
-            </button>
+              {/* Chọn nhiều */}
+              <button
+                onClick={() => {
+                  const next = !selectMode;
+                  setSelectMode(next);
+                  if (!next) {
+                    setSelectedIds(new Set());
+                    setSelectAllByFilter(false);
+                    setBulkTagOpen(false);
+                  }
+                }}
+                title={t("selectTitle")}
+                className={`inline-flex items-center justify-center gap-1 min-w-[34px] min-h-[34px] px-2 py-1.5 rounded-lg border text-xs ${
+                  selectMode
+                    ? "border-green-500 bg-green-50 text-green-700 dark:bg-green-950/60 dark:text-green-300 font-medium"
+                    : "border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{t("select")}</span>
+              </button>
 
-            {/* Làm mới */}
-            <button
-              onClick={() => void handleRefreshFeeds()}
-              title={t("refreshFeeds")}
-              className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
-            >
-              <RefreshCw className={`w-4 h-4 ${refreshingFeeds ? "animate-spin" : ""}`} />
-            </button>
+              {/* Tìm kiếm */}
+              <button
+                onClick={() => setShowFilters((v) => !v)}
+                title={t("searchFilterTitle")}
+                className={`min-w-[34px] min-h-[34px] inline-flex items-center justify-center p-1.5 rounded-lg border ${
+                  showFilters || appliedSearch || afterDate || beforeDate
+                    ? "border-green-500 text-green-600"
+                    : "border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                <Search className="w-4 h-4" />
+              </button>
 
-            {/* Mobile add, status & theme */}
-            <Link
-              href="/add"
-              className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-green-600"
-              title={t("addSource")}
-            >
-              <Plus className="w-4 h-4" />
-            </Link>
-            <Link
-              href="/status"
-              className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800"
-              title={t("systemStatus")}
-            >
-              <Activity className="w-4 h-4" />
-            </Link>
-            <button
-              onClick={toggleTheme}
-              className="md:hidden p-1.5 rounded-lg border border-slate-200 dark:border-slate-800"
-            >
-              {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
+              {/* Làm mới */}
+              <button
+                onClick={() => void handleRefreshFeeds()}
+                title={t("refreshFeeds")}
+                className="min-w-[34px] min-h-[34px] inline-flex items-center justify-center p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <RefreshCw className={`w-4 h-4 ${refreshingFeeds ? "animate-spin" : ""}`} />
+              </button>
+            </div>
           </div>
         </header>
+
+        {/* Thanh chuyển Trong ngày / Trong tuần cho Hot News */}
+        {scope.type === "hot" && (
+          <div className="px-3 md:px-5 py-2 border-b border-slate-200 dark:border-slate-800 bg-orange-50/60 dark:bg-orange-950/20 flex items-center justify-between gap-2 text-xs shrink-0">
+            <div className="inline-flex rounded-lg border border-orange-200 dark:border-orange-900/70 bg-white dark:bg-slate-900 p-0.5">
+              <button
+                onClick={() => setHotWindow("day")}
+                className={`px-3 py-1 rounded-md transition-colors ${
+                  hotWindow === "day"
+                    ? "bg-orange-500 text-white font-semibold"
+                    : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {t("hotDay")}
+              </button>
+              <button
+                onClick={() => setHotWindow("week")}
+                className={`px-3 py-1 rounded-md transition-colors ${
+                  hotWindow === "week"
+                    ? "bg-orange-500 text-white font-semibold"
+                    : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                {t("hotWeek")}
+              </button>
+            </div>
+
+            <button
+              onClick={() => void syncHotViews(true)}
+              disabled={syncingHotViews}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-orange-200 dark:border-orange-900/70 bg-white dark:bg-slate-900 hover:bg-orange-50 dark:hover:bg-orange-950/40 text-orange-700 dark:text-orange-300 font-medium disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${syncingHotViews ? "animate-spin" : ""}`} />
+              <span>{t("hotRefreshViews")}</span>
+            </button>
+          </div>
+        )}
 
         {/* Thanh tìm kiếm & lọc ngày (U8) */}
         {showFilters && (
@@ -1836,7 +2424,7 @@ export default function ReaderApp({
         )}
 
         {/* Danh sách bài dạng thẻ Magazine (U2) */}
-        <div className="flex-1 overflow-y-auto px-3 md:px-5 py-3">
+        <div className="flex-1 overflow-y-auto px-3 md:px-5 py-2 sm:py-3">
           {loadingList ? (
             <div className="max-w-4xl mx-auto space-y-3 py-4">
               {Array.from({ length: 6 }).map((_, idx) => (
@@ -1847,11 +2435,13 @@ export default function ReaderApp({
               ))}
             </div>
           ) : entries.length === 0 ? (
-            <div className="max-w-md mx-auto py-16 text-center space-y-2 text-slate-500">
+            <div className="max-w-md mx-auto py-16 text-center space-y-2 text-slate-500 px-4">
               <p className="text-base font-medium text-slate-700 dark:text-slate-300">
-                {t("noArticles")}
+                {scope.type === "hot" ? t("hotEmpty") : t("noArticles")}
               </p>
-              <p className="text-sm">{t("noArticlesHint")}</p>
+              <p className="text-sm">
+                {scope.type === "hot" ? t("hotEmptyHint") : t("noArticlesHint")}
+              </p>
             </div>
           ) : (
             <div className="max-w-4xl mx-auto divide-y divide-slate-100 dark:divide-slate-800/80">
@@ -1859,6 +2449,12 @@ export default function ReaderApp({
                 const isSelected = selectedIds.has(item.id);
                 const isFocused = idx === focusedIndex;
                 const isUnread = item.status === "unread";
+                const hasMetrics =
+                  item.social_metrics &&
+                  (item.social_metrics.views !== null ||
+                    item.social_metrics.likes !== null ||
+                    item.social_metrics.comments !== null ||
+                    item.social_metrics.shares !== null);
 
                 return (
                   <article
@@ -1868,13 +2464,13 @@ export default function ReaderApp({
                       if (selectMode) toggleSelectId(item.id);
                       else void openEntry(item, idx);
                     }}
-                    className={`group flex gap-3.5 py-3.5 px-2.5 -mx-2.5 rounded-xl cursor-pointer transition-colors ${
+                    className={`group relative flex gap-2.5 sm:gap-3.5 py-3.5 px-2 sm:px-2.5 -mx-2 sm:-mx-2.5 rounded-xl cursor-pointer transition-colors ${
                       isFocused
                         ? "bg-green-50/70 dark:bg-green-950/30 ring-1 ring-green-400/50"
-                        : "hover:bg-slate-50 dark:hover:bg-slate-900/70"
+                        : "hover:bg-slate-50 dark:hover:bg-slate-900/70 active:bg-slate-100/70 dark:active:bg-slate-900"
                     }`}
                   >
-                    {/* Checkbox chọn nhiều */}
+                    {/* Checkbox chọn nhiều (ẩn trên mobile khi không ở chế độ chọn để tiết kiệm chiều ngang) */}
                     <div
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1883,8 +2479,8 @@ export default function ReaderApp({
                       }}
                       className={`pt-1 shrink-0 ${
                         selectMode || isSelected
-                          ? "opacity-100"
-                          : "opacity-0 group-hover:opacity-100"
+                          ? "block opacity-100"
+                          : "hidden sm:block sm:opacity-0 sm:group-hover:opacity-100"
                       } transition-opacity`}
                     >
                       {isSelected ? (
@@ -1894,12 +2490,12 @@ export default function ReaderApp({
                       )}
                     </div>
 
-                    {/* Nội dung thẻ: hàng trên (ảnh + tiêu đề/mô tả) & hàng dưới (chỉ số tương tác thẳng hàng mọi thẻ) */}
+                    {/* Nội dung thẻ */}
                     <div className="flex-1 min-w-0 flex flex-col gap-2">
-                      <div className="flex gap-3.5 items-start">
+                      <div className="flex gap-3 items-start">
                         {/* Thumbnail (ảnh đầu tiên hoặc enclosure) */}
                         {item.thumbnail && (
-                          <div className="w-24 h-16 sm:w-28 sm:h-20 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 border border-slate-200/70 dark:border-slate-800">
+                          <div className="w-20 h-20 sm:w-28 sm:h-20 rounded-xl sm:rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 shrink-0 border border-slate-200/70 dark:border-slate-800">
                             <img
                               src={item.thumbnail}
                               alt=""
@@ -1921,11 +2517,11 @@ export default function ReaderApp({
                             {item.title}
                           </h2>
                           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-                            <span className="font-medium truncate max-w-[200px]">
+                            <span className="font-medium truncate max-w-[160px] sm:max-w-[200px]">
                               {item.feed.title}
                             </span>
                             {item.feed.category?.title && (
-                              <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px] truncate">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[11px] truncate max-w-[110px]">
                                 {item.feed.category.title}
                               </span>
                             )}
@@ -1956,56 +2552,124 @@ export default function ReaderApp({
                         </div>
                       </div>
 
-                      {item.social_metrics &&
-                        (item.social_metrics.views !== null ||
-                          item.social_metrics.likes !== null ||
-                          item.social_metrics.comments !== null ||
-                          item.social_metrics.shares !== null) && (
-                          <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
-                            {item.social_metrics.views !== null && (
-                              <span
-                                title="Lượt xem"
-                                className="inline-flex items-center gap-1 min-w-[68px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
-                              >
-                                <Eye className="w-3 h-3 text-sky-600 dark:text-sky-400 shrink-0" />
-                                <span>{formatCompactMetric(item.social_metrics.views)}</span>
-                              </span>
-                            )}
-                            {item.social_metrics.likes !== null && (
-                              <span
-                                title="Lượt thích"
-                                className="inline-flex items-center gap-1 min-w-[58px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
-                              >
-                                <Heart className="w-3 h-3 text-rose-500 shrink-0" />
-                                <span>{formatCompactMetric(item.social_metrics.likes)}</span>
-                              </span>
-                            )}
-                            {item.social_metrics.comments !== null && (
-                              <span
-                                title="Bình luận"
-                                className="inline-flex items-center gap-1 min-w-[54px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
-                              >
-                                <MessageCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                                <span>{formatCompactMetric(item.social_metrics.comments)}</span>
-                              </span>
-                            )}
-                            {item.social_metrics.shares !== null && (
-                              <span
-                                title="Chia sẻ / Retweet"
-                                className="inline-flex items-center gap-1 min-w-[54px] px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
-                              >
-                                <Repeat2 className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
-                                <span>{formatCompactMetric(item.social_metrics.shares)}</span>
-                              </span>
-                            )}
+                      {/* Hàng dưới: Metrics (trái) + Nút thao tác nhanh trên mobile (phải) */}
+                      <div
+                        className={`flex items-center justify-between gap-2 ${
+                          hasMetrics ? "" : "sm:hidden"
+                        }`}
+                      >
+                          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[11px] text-slate-500 dark:text-slate-400 tabular-nums min-w-0">
+                            {item.social_metrics?.views !== null &&
+                              item.social_metrics?.views !== undefined && (
+                                <span
+                                  title="Lượt xem"
+                                  className="inline-flex items-center gap-1 sm:min-w-[68px] px-1.5 sm:px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                                >
+                                  <Eye className="w-3 h-3 text-sky-600 dark:text-sky-400 shrink-0" />
+                                  <span>{formatCompactMetric(item.social_metrics.views)}</span>
+                                </span>
+                              )}
+                            {item.social_metrics?.likes !== null &&
+                              item.social_metrics?.likes !== undefined && (
+                                <span
+                                  title="Lượt thích"
+                                  className="inline-flex items-center gap-1 sm:min-w-[58px] px-1.5 sm:px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                                >
+                                  <Heart className="w-3 h-3 text-rose-500 shrink-0" />
+                                  <span>{formatCompactMetric(item.social_metrics.likes)}</span>
+                                </span>
+                              )}
+                            {item.social_metrics?.comments !== null &&
+                              item.social_metrics?.comments !== undefined && (
+                                <span
+                                  title="Bình luận"
+                                  className="inline-flex items-center gap-1 sm:min-w-[54px] px-1.5 sm:px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                                >
+                                  <MessageCircle className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                                  <span>{formatCompactMetric(item.social_metrics.comments)}</span>
+                                </span>
+                              )}
+                            {item.social_metrics?.shares !== null &&
+                              item.social_metrics?.shares !== undefined && (
+                                <span
+                                  title="Chia sẻ / Retweet"
+                                  className="inline-flex items-center gap-1 sm:min-w-[54px] px-1.5 sm:px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800/80"
+                                >
+                                  <Repeat2 className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0" />
+                                  <span>{formatCompactMetric(item.social_metrics.shares)}</span>
+                                </span>
+                              )}
                           </div>
-                        )}
+
+                          {/* Thao tác nhanh trên Mobile */}
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex sm:hidden items-center gap-0.5 shrink-0 relative ml-auto"
+                          >
+                            <button
+                              onClick={() =>
+                                setCardTagPopover((prev) =>
+                                  prev?.entryId === item.id
+                                    ? null
+                                    : { entryId: item.id, input: "" }
+                                )
+                              }
+                              title={t("chooseTagsTitle")}
+                              className={`p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 ${
+                                (item.tags || []).length > 0
+                                  ? "text-green-600"
+                                  : "text-slate-400"
+                              }`}
+                            >
+                              <Tag className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => void toggleBookmark(item.id)}
+                              title={t("bookmarkTitle")}
+                              className={`p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 ${
+                                item.starred ? "text-amber-500" : "text-slate-400"
+                              }`}
+                            >
+                              <Bookmark
+                                className="w-4 h-4"
+                                fill={item.starred ? "currentColor" : "none"}
+                              />
+                            </button>
+                            <button
+                              onClick={() =>
+                                void markEntriesStatus(
+                                  [item.id],
+                                  isUnread ? "read" : "unread"
+                                )
+                              }
+                              title={t("toggleReadTitle")}
+                              className="p-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400"
+                            >
+                              <span
+                                className={`block w-2.5 h-2.5 rounded-full ${
+                                  isUnread
+                                    ? "bg-green-600"
+                                    : "border border-slate-400"
+                                }`}
+                              />
+                            </button>
+                            <a
+                              href={item.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={t("openOriginalTitle")}
+                              className="p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400"
+                            >
+                              <ExternalLink className="w-4 h-4" />
+                            </a>
+                          </div>
+                        </div>
                     </div>
 
-                    {/* Nút thao tác nhanh trên thẻ */}
+                    {/* Nút thao tác nhanh trên Desktop */}
                     <div
                       onClick={(e) => e.stopPropagation()}
-                      className="flex flex-col items-end justify-between shrink-0 gap-1 relative"
+                      className="hidden sm:flex flex-col items-end justify-between shrink-0 gap-1"
                     >
                       <div className="flex items-center gap-1">
                         <button
@@ -2060,80 +2724,83 @@ export default function ReaderApp({
                           target="_blank"
                           rel="noopener noreferrer"
                           title={t("openOriginalTitle")}
-                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 hidden sm:inline-flex"
+                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />
                         </a>
                       </div>
-
-                      {cardTagPopover?.entryId === item.id && (
-                        <div className="absolute right-0 top-8 z-40 w-60 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-2.5 space-y-2">
-                          <form
-                            onSubmit={(e) => {
-                              e.preventDefault();
-                              const next = cardTagPopover.input.trim();
-                              if (!next) return;
-                              void mutateEntryTag(item.id, { add: next });
-                              setCardTagPopover({ entryId: item.id, input: "" });
-                            }}
-                            className="flex gap-1"
-                          >
-                            <input
-                              type="text"
-                              value={cardTagPopover.input}
-                              onChange={(e) =>
-                                setCardTagPopover({
-                                  entryId: item.id,
-                                  input: e.target.value,
-                                })
-                              }
-                              placeholder={t("tagInputPlaceholder")}
-                              autoFocus
-                              className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
-                            />
-                            <button
-                              type="submit"
-                              className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700"
-                            >
-                              +
-                            </button>
-                          </form>
-                          {tagsList.length > 0 && (
-                            <div className="max-h-40 overflow-y-auto space-y-0.5 text-xs">
-                              {tagsList.map((tg) => {
-                                const hasTag = (item.tags || []).includes(tg.name);
-                                const st = getTagStyle(tg.color);
-                                return (
-                                  <button
-                                    key={tg.name}
-                                    type="button"
-                                    onClick={() =>
-                                      void mutateEntryTag(
-                                        item.id,
-                                        hasTag
-                                          ? { remove: tg.name }
-                                          : { add: tg.name }
-                                      )
-                                    }
-                                    className="w-full flex items-center justify-between px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                                  >
-                                    <span className="flex items-center gap-1.5 min-w-0">
-                                      <span
-                                        className={`w-2 h-2 rounded-full shrink-0 ${st.dot}`}
-                                      />
-                                      <span className="truncate">{tg.name}</span>
-                                    </span>
-                                    {hasTag && (
-                                      <Check className="w-3.5 h-3.5 text-green-600 shrink-0" />
-                                    )}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      )}
                     </div>
+
+                    {cardTagPopover?.entryId === item.id && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute right-2 bottom-10 sm:bottom-auto sm:top-10 z-40 w-60 max-w-[calc(100vw-2rem)] rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-2.5 space-y-2"
+                      >
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const next = cardTagPopover.input.trim();
+                            if (!next) return;
+                            void mutateEntryTag(item.id, { add: next });
+                            setCardTagPopover({ entryId: item.id, input: "" });
+                          }}
+                          className="flex gap-1"
+                        >
+                          <input
+                            type="text"
+                            value={cardTagPopover.input}
+                            onChange={(e) =>
+                              setCardTagPopover({
+                                entryId: item.id,
+                                input: e.target.value,
+                              })
+                            }
+                            placeholder={t("tagInputPlaceholder")}
+                            autoFocus
+                            className="flex-1 min-w-0 px-2 py-1 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs"
+                          />
+                          <button
+                            type="submit"
+                            className="px-2 py-1 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700"
+                          >
+                            +
+                          </button>
+                        </form>
+                        {tagsList.length > 0 && (
+                          <div className="max-h-40 overflow-y-auto space-y-0.5 text-xs">
+                            {tagsList.map((tg) => {
+                              const hasTag = (item.tags || []).includes(tg.name);
+                              const st = getTagStyle(tg.color);
+                              return (
+                                <button
+                                  key={tg.name}
+                                  type="button"
+                                  onClick={() =>
+                                    void mutateEntryTag(
+                                      item.id,
+                                      hasTag
+                                        ? { remove: tg.name }
+                                        : { add: tg.name }
+                                    )
+                                  }
+                                  className="w-full flex items-center justify-between px-2 py-1 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
+                                >
+                                  <span className="flex items-center gap-1.5 min-w-0">
+                                    <span
+                                      className={`w-2 h-2 rounded-full shrink-0 ${st.dot}`}
+                                    />
+                                    <span className="truncate">{tg.name}</span>
+                                  </span>
+                                  {hasTag && (
+                                    <Check className="w-3.5 h-3.5 text-green-600 shrink-0" />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </article>
                 );
               })}
@@ -2148,7 +2815,7 @@ export default function ReaderApp({
                   (activeFeedSupportsArchive && !archiveExhausted) ? (
                   <button
                     onClick={() => void handleLoadMore()}
-                    className="px-5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold shadow-sm transition-colors"
+                    className="px-5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-semibold shadow-sm transition-colors"
                   >
                     {t("loadMoreBtn")}
                   </button>
@@ -2160,6 +2827,63 @@ export default function ReaderApp({
           )}
         </div>
 
+        {/* Thanh điều hướng dưới cùng tối ưu cho iPhone / Mobile */}
+        <nav className="md:hidden shrink-0 border-t border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 backdrop-blur pb-[env(safe-area-inset-bottom)]">
+          <div className="grid grid-cols-5 h-[54px]">
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className={`flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${
+                mobileMenuOpen
+                  ? "text-green-600 font-semibold"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              <Folder className="w-5 h-5" />
+              <span>{t("feeds")}</span>
+            </button>
+            <button
+              onClick={() => selectScope({ type: "all" })}
+              className={`flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${
+                scope.type === "all"
+                  ? "text-green-600 font-semibold"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              <Home className="w-5 h-5" />
+              <span>{t("newsfeed")}</span>
+            </button>
+            <button
+              onClick={() => selectScope({ type: "hot" })}
+              className={`flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${
+                scope.type === "hot"
+                  ? "text-orange-500 font-semibold"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              <Flame className="w-5 h-5" />
+              <span>{t("hotNews")}</span>
+            </button>
+            <button
+              onClick={() => selectScope({ type: "starred" })}
+              className={`flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] ${
+                scope.type === "starred"
+                  ? "text-green-600 font-semibold"
+                  : "text-slate-500 dark:text-slate-400"
+              }`}
+            >
+              <Bookmark className="w-5 h-5" />
+              <span>{t("saved")}</span>
+            </button>
+            <Link
+              href="/add"
+              className="flex flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] text-slate-500 dark:text-slate-400 hover:text-green-600"
+            >
+              <Plus className="w-5 h-5" />
+              <span>{t("addSourceShort")}</span>
+            </Link>
+          </div>
+        </nav>
+
         {/* Màn hình đọc bài viết (U6 + U7) */}
         {(activeEntry || loadingDetail) && (
           <div className="fixed inset-0 z-40 flex justify-end bg-black/40 backdrop-blur-[1px]">
@@ -2169,11 +2893,12 @@ export default function ReaderApp({
             />
             <section className="w-full md:w-[760px] max-w-full h-full bg-white dark:bg-slate-950 shadow-2xl border-l border-slate-200 dark:border-slate-800 flex flex-col">
               {/* Header trình đọc */}
-              <div className="h-12 px-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 shrink-0">
+              <div className="pt-[env(safe-area-inset-top)] border-b border-slate-200 dark:border-slate-800 shrink-0">
+                <div className="h-12 px-3 sm:px-4 flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => setActiveEntry(null)}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
+                    className="min-w-[38px] min-h-[38px] inline-flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"
                     title={`${t("close")} (Esc)`}
                   >
                     <ChevronLeft className="w-5 h-5 md:hidden" />
@@ -2187,7 +2912,7 @@ export default function ReaderApp({
                     }}
                     disabled={focusedIndex <= 0}
                     title={t("prevArticleTitle")}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
+                    className="min-w-[36px] min-h-[36px] inline-flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
                   >
                     <ChevronUp className="w-4 h-4" />
                   </button>
@@ -2199,7 +2924,7 @@ export default function ReaderApp({
                     }}
                     disabled={focusedIndex >= entries.length - 1}
                     title={t("nextArticleTitle")}
-                    className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
+                    className="min-w-[36px] min-h-[36px] inline-flex items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
                   >
                     <ChevronDown className="w-4 h-4" />
                   </button>
@@ -2210,15 +2935,17 @@ export default function ReaderApp({
                     <button
                       onClick={() => void handleFetchFullContent()}
                       disabled={fetchingFull}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium disabled:opacity-50"
+                      className="inline-flex items-center gap-1 px-2 sm:px-2.5 py-1.5 min-h-[36px] rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 text-[11px] sm:text-xs font-medium disabled:opacity-50"
                     >
-                      <Sparkles className="w-3.5 h-3.5 text-green-600" />
-                      {fetchingFull ? t("fetchingFullText") : t("fetchFullText")}
+                      <Sparkles className="w-3.5 h-3.5 text-green-600 shrink-0" />
+                      <span>
+                        {fetchingFull ? t("fetchingFullText") : t("fetchFullText")}
+                      </span>
                     </button>
                     <button
                       onClick={() => void toggleBookmark(activeEntry.id)}
                       title={t("bookmarkTitle")}
-                      className={`p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 ${
+                      className={`min-w-[36px] min-h-[36px] inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 ${
                         activeEntry.starred ? "text-amber-500" : "text-slate-500"
                       }`}
                     >
@@ -2235,7 +2962,7 @@ export default function ReaderApp({
                         )
                       }
                       title={t("toggleReadTitle")}
-                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 text-xs"
+                      className="px-2.5 min-h-[36px] rounded-lg border border-slate-200 dark:border-slate-800 text-xs"
                     >
                       {activeEntry.status === "unread" ? t("unread") : t("read")}
                     </button>
@@ -2244,17 +2971,18 @@ export default function ReaderApp({
                       target="_blank"
                       rel="noopener noreferrer"
                       title={t("openOriginalTitle")}
-                      className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
+                      className="min-w-[36px] min-h-[36px] inline-flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800"
                     >
                       <ExternalLink className="w-4 h-4" />
                     </a>
                   </div>
                 )}
+                </div>
               </div>
 
               {/* Thanh Copy nhanh (U7) */}
               {activeEntry && (
-                <div className="px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/70 flex flex-wrap items-center gap-1.5 text-xs shrink-0">
+                <div className="px-3 sm:px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/70 flex flex-nowrap sm:flex-wrap overflow-x-auto no-scrollbar items-center gap-1.5 text-xs shrink-0">
                   <button
                     onClick={() =>
                       void copyText(
@@ -2262,7 +2990,7 @@ export default function ReaderApp({
                         "text"
                       )
                     }
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
+                    className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     <FileText className="w-3.5 h-3.5" />
                     {t("copyText")}
@@ -2274,7 +3002,7 @@ export default function ReaderApp({
                         "Markdown"
                       )
                     }
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
+                    className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     <Copy className="w-3.5 h-3.5" />
                     {t("copyMarkdown")}
@@ -2286,7 +3014,7 @@ export default function ReaderApp({
                         "text + link"
                       )
                     }
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
+                    className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-md bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700"
                   >
                     <Copy className="w-3.5 h-3.5" />
                     {t("copyTextLink")}
@@ -2294,7 +3022,7 @@ export default function ReaderApp({
                   {activeEntry.images.length > 0 && (
                     <a
                       href={`/api/entries/${activeEntry.id}/images-zip`}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-green-600 text-white hover:bg-green-700 font-medium"
+                      className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 sm:py-1 rounded-md bg-green-600 text-white hover:bg-green-700 font-medium"
                     >
                       <Download className="w-3.5 h-3.5" />
                       {t("downloadAllImages", { count: activeEntry.images.length })}
@@ -2307,7 +3035,7 @@ export default function ReaderApp({
               )}
 
               {/* Nội dung bài viết */}
-              <div className="flex-1 overflow-y-auto px-5 md:px-8 py-6">
+              <div className="flex-1 overflow-y-auto px-4 sm:px-5 md:px-8 py-4 sm:py-6 pb-[calc(2rem+env(safe-area-inset-bottom))]">
                 {loadingDetail && !activeEntry ? (
                   <div className="space-y-4 animate-pulse">
                     <div className="h-7 bg-slate-200 dark:bg-slate-800 rounded w-3/4" />
@@ -2326,7 +3054,7 @@ export default function ReaderApp({
                       </span>
                     </div>
 
-                    <h1 className="text-2xl font-bold leading-tight mb-4">
+                    <h1 className="text-xl sm:text-2xl font-bold leading-tight mb-4">
                       <a
                         href={activeEntry.url}
                         target="_blank"
@@ -2470,7 +3198,7 @@ export default function ReaderApp({
                                 setVideoFallbackEmbed(true);
                               }
                             }}
-                            className="w-full max-h-[520px] rounded-xl bg-black border border-slate-200 dark:border-slate-800"
+                            className="w-full max-h-[68dvh] sm:max-h-[520px] rounded-xl bg-black border border-slate-200 dark:border-slate-800"
                           />
                         ))}
                       </div>
@@ -2650,9 +3378,25 @@ export default function ReaderApp({
         />
       )}
 
+      {/* Floating ghost khi kéo thả folder/feed */}
+      {activeDrag && (
+        <div
+          ref={dragGhostRef}
+          style={{ transform: "translate3d(-9999px, -9999px, 0)" }}
+          className="fixed top-0 left-0 z-[70] pointer-events-none px-3 py-1.5 rounded-lg bg-slate-900/90 dark:bg-white/95 text-white dark:text-slate-900 text-xs font-medium shadow-xl flex items-center gap-1.5 max-w-[240px]"
+        >
+          {activeDrag.kind === "category" ? (
+            <Folder className="w-3.5 h-3.5 shrink-0 text-green-400 dark:text-green-600" />
+          ) : (
+            <Rss className="w-3.5 h-3.5 shrink-0 text-green-400 dark:text-green-600" />
+          )}
+          <span className="truncate">{activeDrag.title}</span>
+        </div>
+      )}
+
       {/* Toast thông báo */}
       {toast && (
-        <div className="fixed bottom-4 right-4 z-50 px-4 py-2.5 rounded-xl bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs font-medium shadow-xl">
+        <div className="fixed bottom-[calc(4.25rem+env(safe-area-inset-bottom))] md:bottom-4 right-4 left-4 sm:left-auto z-50 px-4 py-2.5 rounded-xl bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 text-xs font-medium shadow-xl text-center sm:text-left">
           {toast}
         </div>
       )}

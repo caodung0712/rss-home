@@ -719,7 +719,7 @@ export default function AddSourcePage() {
   }, [feeds, manageQuery]);
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
+    <div className="h-[100dvh] w-full overflow-hidden flex bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100">
       {/* Thanh icon ngoài cùng bên trái (giống Inoreader) */}
       <aside className="hidden md:flex flex-col items-center justify-between w-12 shrink-0 border-r border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 py-2">
         <div className="flex flex-col items-center gap-2">
